@@ -1,0 +1,33 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Build artifacts
+dist/
+downloads/
+*.vsix
+
+upstream/
+tmp/
+research/
+
+# Test artifacts
+coverage/
+
+# Internal Docs
+docs/
+# Env / secrets
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# Logs
+*.log
+
+# Backups
+*.bak
+package.json.bak

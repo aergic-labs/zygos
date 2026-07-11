@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "ignoreBinaries": ["ssh-keygen"],
+  "ignoreDependencies": ["sharp"],
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true,
+    "function": true
+  },
+  "entry": [
+    "src/extension.ts",
+    "src/host/index.ts",
+    "src/host/treeView.ts",
+    "src/builtin-disable/index.ts",
+    "src/webview/configPanel.ts",
+    "scripts/askpass/askpass-main.js",
+    "scripts/gen-icons.mjs",
+    "scripts/clock-skew-test.mjs"
+  ],
+  "project": ["src/**", "test/unit/**", "test/property/**", "scripts/**"]
+}

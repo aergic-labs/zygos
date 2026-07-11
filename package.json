@@ -1,0 +1,280 @@
+{
+  "name": "zygos",
+  "displayName": "Zygos Remote SSH",
+  "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
+  "version": "0.0.1",
+  "publisher": "aergic",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aergic-labs/zygos"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./dist/extension.js",
+  "icon": "resources/zygos.png",
+  "enabledApiProposals": [
+    "resolvers",
+    "contribViewsRemote"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onResolveRemoteAuthority:ssh-remote",
+    "onCommand:zygos.connect",
+    "onCommand:zygos.connectToHost",
+    "onCommand:zygos.openConfigFile",
+    "onCommand:zygos.testDownloadUrl",
+    "onCommand:zygos.configureServerDownload",
+    "onView:zygos.hosts"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "zygos.connect",
+        "title": "Connect to SSH Host...",
+        "category": "Zygos Remote SSH"
+      },
+      {
+        "command": "zygos.connectToHost",
+        "title": "Connect to SSH Host in Current Window...",
+        "category": "Zygos Remote SSH"
+      },
+      {
+        "command": "zygos.openConfigFile",
+        "title": "Open OpenSSH Configuration File...",
+        "category": "Zygos Remote SSH"
+      },
+      {
+        "command": "zygos.addHost",
+        "title": "Add New SSH Host...",
+        "category": "Zygos Remote SSH"
+      },
+      {
+        "command": "zygos.refresh",
+        "title": "Refresh Host View",
+        "category": "Zygos Remote SSH",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "zygos.openTerminal",
+        "title": "Open Remote Terminal",
+        "category": "Zygos Remote SSH",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "zygos.showServerLog",
+        "title": "Show Server Log",
+        "category": "Zygos Remote SSH",
+        "icon": "$(output)"
+      },
+      {
+        "command": "zygos.connectFromTree",
+        "title": "Connect to SSH Host...",
+        "category": "Zygos Remote SSH",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "zygos.showConflictInfo",
+        "title": "Zygos: SSH Resolver Conflict",
+        "category": "Zygos Remote SSH"
+      },
+      {
+        "command": "zygos.configureServerDownload",
+        "title": "Configure Server Download",
+        "category": "Zygos Remote SSH"
+      }
+    ],
+    "views": {
+      "remote": [
+        {
+          "id": "zygos.hosts",
+          "name": "SSH Targets",
+          "remoteName": "ssh-remote",
+          "group": "targets@1"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "zygos.connect",
+          "when": "!zygos.conflict"
+        },
+        {
+          "command": "zygos.connectToHost",
+          "when": "!zygos.conflict"
+        },
+        {
+          "command": "zygos.openConfigFile",
+          "when": "!zygos.conflict"
+        },
+        {
+          "command": "zygos.addHost",
+          "when": "!zygos.conflict"
+        },
+        {
+          "command": "zygos.configureServerDownload",
+          "when": "!zygos.conflict"
+        },
+        {
+          "command": "zygos.testDownloadUrl",
+          "when": "false"
+        },
+        {
+          "command": "zygos.showConflictInfo",
+          "when": "zygos.conflict"
+        },
+        {
+          "command": "zygos.openTerminal",
+          "when": "false"
+        },
+        {
+          "command": "zygos.showServerLog",
+          "when": "false"
+        },
+        {
+          "command": "zygos.connectFromTree",
+          "when": "false"
+        },
+        {
+          "command": "zygos.refresh",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "zygos.refresh",
+          "when": "view == zygos.hosts",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "zygos.openTerminal",
+          "when": "viewItem == zygos.host",
+          "group": "navigation@1"
+        },
+        {
+          "command": "zygos.showServerLog",
+          "when": "viewItem == zygos.host",
+          "group": "navigation@2"
+        },
+        {
+          "command": "zygos.connectFromTree",
+          "when": "viewItem == zygos.host",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Zygos Remote SSH",
+      "properties": {
+        "zygos.serverDownload": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "**Use the [configuration wizard](command:zygos.configureServerDownload) instead of editing here.** The wizard provides auto-detection, fork templates, a test button, and guided setup.\n\nAdvanced: this object holds `mode` (\"auto\" or \"custom\"), `template` (URL template, used when mode is custom), and `binaryName` (override for server binary name).",
+          "order": 0,
+          "scope": "application"
+        },
+        "zygos.sshPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a custom SSH executable.",
+          "order": 10
+        },
+        "zygos.configFile": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a custom SSH config file.",
+          "order": 11
+        },
+        "zygos.logLevel": {
+          "type": "string",
+          "enum": [
+            "info",
+            "debug",
+            "trace"
+          ],
+          "enumDescriptions": [
+            "Standard logging (default)",
+            "Detailed diagnostic output",
+            "Maximum verbosity"
+          ],
+          "default": "info",
+          "description": "Logging verbosity level for the Zygos output channel.",
+          "order": 12
+        },
+        "zygos.fileLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "Append all logs to ~/.zygos/zygos.log so logs from multiple windows (apex + remote) appear in one tailable file. Off by default.",
+          "order": 13
+        },
+        "zygos.askpass": {
+          "type": "boolean",
+          "default": true,
+          "description": "Surface SSH password and passphrase prompts as VS Code input boxes. When disabled, SSH runs with BatchMode=yes and fails fast instead of prompting - use this if you rely only on key-based auth.",
+          "order": 14
+        },
+        "zygos.askpassCacheTtl": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 0,
+          "description": "Hours that cached SSH passphrases/passwords survive. 0 = never expire. On activate, if the cache file is older than this, it is wiped. Default 8 (one work session).",
+          "order": 15
+        },
+        "zygos.defaultExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extension IDs to install on the remote SSH host when the server starts. Each ID is passed via --install-extension.",
+          "order": 16
+        },
+        "zygos.httpProxy": {
+          "type": "string",
+          "default": "",
+          "description": "HTTP proxy URL to forward to the remote server (e.g. http://proxy.corp.com:3128). Empty = no proxy forwarding.",
+          "order": 17
+        },
+        "zygos.httpsProxy": {
+          "type": "string",
+          "default": "",
+          "description": "HTTPS proxy URL to forward to the remote server. Empty = no proxy forwarding.",
+          "order": 18
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
+    "lint": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json && eslint && knip && node scripts/guard-bundle.mjs",
+    "test": "vitest run",
+    "package": "node scripts/build-vsix.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.96.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "@vscode/vsce": "^3.0.0",
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "esbuild": "^0.25.0",
+    "fast-check": "^3.23.0",
+    "knip": "^6.15.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "ssh-config": "^5.1.0"
+  }
+}

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="${STYLE_URI}" />
+        <title>Zygos Server Download</title>
+    </head>
+    <body>
+        <h1>Server Download</h1>
+        <div class="subtitle">
+            Configure how Zygos downloads the remote server tarball.
+        </div>
+
+        <!-- Mode header -->
+        <div class="mode-header">
+            <div class="mode-label">
+                Current mode: <span id="modeBadge" class="badge auto">AUTO</span>
+            </div>
+            <button
+                class="secondary"
+                data-action="switch-mode"
+                id="switchModeBtn"
+            >
+                Switch to Custom
+            </button>
+        </div>
+
+        <!-- Auto section (read-only info) -->
+        <div class="section" id="autoSection">
+            <div class="row">
+                <label>Detected editor</label>
+                <div id="forkName">Detecting...</div>
+            </div>
+            <div class="row">
+                <label>Resolved URL</label>
+                <div class="url-box empty" id="autoUrl">Resolving...</div>
+                <div class="test-result" id="autoTestResult"></div>
+                <div class="button-row">
+                    <button
+                        class="secondary"
+                        data-action="test-auto"
+                        id="autoTestBtn"
+                    >
+                        Test URL
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Custom section (editor) -->
+        <div class="section" id="customSection">
+            <div class="row">
+                <label for="forkSelect">Fork template</label>
+                <select id="forkSelect"></select>
+                <div class="desc">
+                    Pick a fork to pre-fill the template, or choose Custom.
+                </div>
+            </div>
+
+            <div class="row">
+                <label for="templateInput">URL template</label>
+                <input
+                    type="text"
+                    id="templateInput"
+                    placeholder="https://..."
+                />
+            </div>
+
+            <div class="row">
+                <label>Available variables</label>
+                <table class="vars" id="varsTable"></table>
+            </div>
+
+            <div class="row">
+                <label for="binaryNameInput">Server binary name override</label>
+                <input
+                    type="text"
+                    id="binaryNameInput"
+                    placeholder="(use default from product.json)"
+                />
+            </div>
+
+            <div class="row">
+                <label>Preview URL</label>
+                <div class="url-box empty" id="previewUrl">(empty)</div>
+                <div class="test-result" id="customTestResult"></div>
+                <div class="button-row">
+                    <button
+                        class="secondary"
+                        data-action="test-custom"
+                        id="customTestBtn"
+                    >
+                        Test URL
+                    </button>
+                    <button data-action="apply">Apply</button>
+                </div>
+            </div>
+        </div>
+
+        <script src="${SCRIPT_URI}"></script>
+    </body>
+</html>

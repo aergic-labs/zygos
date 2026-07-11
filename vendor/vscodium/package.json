@@ -1,0 +1,44 @@
+{
+  "name": "zygos-vscodium",
+  "displayName": "Zygos Remote SSH for VSCodium",
+  "description": "Connect to any remote machine via SSH from VSCodium, code-oss, or VSCodium-OSS. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary. Zero-config for VSCodium; customizable for forks and custom builds.",
+  "keywords": [
+    "vscodium",
+    "codium",
+    "code-oss",
+    "vscode-oss",
+    "remote ssh",
+    "remote-ssh",
+    "ssh",
+    "remote",
+    "remote development",
+    "devcontainer"
+  ],
+  "platform": {
+    "name": "VSCodium",
+    "dataFolderName": ".vscode-oss",
+    "serverApplicationName": "codium-server",
+    "serverDataFolderName": ".vscodium-server",
+    "needsArgvPatch": true
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "zygos.testDownloadUrl",
+        "title": "Test Server Download URL",
+        "category": "Zygos Remote SSH"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "zygos.serverDownload": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "**Use the [configuration wizard](command:zygos.configureServerDownload) instead of editing here.** The wizard provides auto-detection, fork templates, a test button, and guided setup.\n\nAdvanced: this object holds `mode` (\"auto\" or \"custom\"), `template` (URL template, used when mode is custom), and `binaryName` (override for server binary name).",
+          "order": 0,
+          "scope": "application"
+        }
+      }
+    }
+  }
+}

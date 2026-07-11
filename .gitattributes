@@ -1,0 +1,14 @@
+# Normalize line endings: text files use LF in the repo
+* text=auto eol=lf
+
+# Shell scripts MUST stay LF (CRLF breaks them on Linux remotes)
+*.sh text eol=lf
+
+# Windows-only scripts stay CRLF
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaries
+*.png binary
+*.svg text
+tools/busybox/* binary

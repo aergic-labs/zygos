@@ -1,0 +1,66 @@
+# Build artifacts (regenerated)
+dist/**
+!dist/extension.js
+!dist/extension.js.map
+
+# Source / dev - not needed at runtime in the VSIX
+src/**
+test/**
+research/**
+upstream/**
+docs/**
+tmp/**
+vendor/**
+resources/.gitkeep
+scripts/**
+!scripts/askpass/**
+.open-vscode/**
+.vscode/**
+.github/**
+
+# Tooling config (not needed at runtime)
+esbuild.config.mjs
+tsconfig.json
+tsconfig.test.json
+vitest.config.ts
+eslint.config.mjs
+.knip.json
+.nvmrc
+.editorconfig
+
+# Docs / meta
+*.md
+!README.md
+!LICENSE
+LICENSE.txt
+CHANGELOG.md
+
+# Keep tools/busybox (static binaries shipped in VSIX)
+!tools/busybox/**
+
+# Git / OS cruft
+.gitignore
+.gitattributes
+.git/**
+.npmrc
+npm-shrinkwrap.json
+AGENTS.md
+*.log
+.env
+.env.*
+*.bak
+sim.ps1
+Makefile
+
+# Native build intermediates (keep installed prebuilds)
+node_modules/**/build/Release/.deps.mk
+node_modules/**/build/Release/obj.target/**
+node_modules/**/*.gyp
+node_modules/**/*.md
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/examples/**
+node_modules/**/example/**
+node_modules/**/docs/**
+node_modules/**/.github/**
+node_modules/**/Makefile

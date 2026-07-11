@@ -1,0 +1,36 @@
+{
+  "name": "zygos-kiro",
+  "displayName": "Zygos Remote SSH for Kiro",
+  "description": "Connect to any remote machine via SSH from Kiro. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
+  "keywords": [
+    "kiro",
+    "remote ssh",
+    "remote-ssh",
+    "ssh",
+    "remote",
+    "remote development",
+    "devcontainer"
+  ],
+  "platform": {
+    "name": "Kiro",
+    "applicationName": "kiro",
+    "dataFolderName": ".kiro",
+    "serverApplicationName": "kiro-server",
+    "serverDataFolderName": ".kiro-server",
+    "needsArgvPatch": true
+  },
+  "__strip": {
+    "activationEvents": [
+      "onCommand:zygos.configureServerDownload",
+      "onCommand:zygos.testDownloadUrl"
+    ],
+    "commands": [
+      "zygos.configureServerDownload",
+      "zygos.testDownloadUrl",
+      "zygos.showConflictInfo"
+    ],
+    "configuration": [
+      "zygos.serverDownload"
+    ]
+  }
+}

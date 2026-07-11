@@ -1,0 +1,74 @@
+Zygos Remote SSH
+Copyright 2026 Aergic Labs, LLC
+
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+This product includes software developed by third parties.
+
+================================================================================
+THIRD-PARTY DEPENDENCIES (Production)
+================================================================================
+
+The following third-party packages are included in the distributed extension:
+
+--------------------------------------------------------------------------------
+busybox
+  Version: 1.36.1
+  License: GPL-2.0-only
+  Author: Denis Vlasenko, Rob Landley, and contributors
+  Repository: https://busybox.net
+  Note: Static binaries (bb-x64, bb-arm64) are shipped in tools/busybox/
+        and bootstrapped on the SSH remote to provide a known POSIX
+        environment for server installation. Source code is available at
+        https://busybox.net/downloads/.
+
+--------------------------------------------------------------------------------
+jsonc-parser
+  Version: 3.3.1
+  License: MIT
+  Author: Microsoft Corporation
+  Repository: https://github.com/microsoft/node-jsonc-parser
+  Note: JSONC (JSON with Comments) parser used for comment-preserving
+        edits to argv.json when enabling proposed APIs.
+
+--------------------------------------------------------------------------------
+ssh-config
+  Version: 5.1.0
+  License: MIT
+  Author: le \u
+  Repository: https://github.com/cyz/ssh-config
+  Note: SSH config file parser for reading ~/.ssh/config host definitions.
+
+--------------------------------------------------------------------------------
+node-dirty
+  Version: 0.9.9 (vendored)
+  License: MIT
+  Author: Felix Geisend\u00f6rner <felix@debuggable.com>
+  Repository: https://github.com/felixge/node-dirty
+  Note: Tiny append-only key-value store used as the backing store for the
+        encrypted askpass cache. Vendored at vendor/node-dirty/ (no runtime
+        dependency). Passphrases are AES-256-GCM encrypted before storage;
+        this file contains only ciphertext and metadata.
+
+================================================================================
+LICENSE SUMMARY
+================================================================================
+
+This project uses open source software under the following licenses:
+
+  - GPL-2.0-only: busybox
+  - MIT: jsonc-parser, ssh-config, node-dirty
+
+================================================================================
+COMPLIANCE NOTES
+================================================================================
+
+1. The busybox static binaries are licensed under GPL-2.0. Source code is
+   available at https://busybox.net/downloads/ and can be obtained by
+   contacting contact@aergic.com.
+
+2. jsonc-parser and ssh-config are bundled into dist/extension.js by esbuild
+   at build time. They are not shipped as separate node_modules directories.
+
+3. Development dependencies (vitest, typescript, esbuild, @vscode/vsce, etc.)
+   are NOT included in the distributed extension and are not listed here.
