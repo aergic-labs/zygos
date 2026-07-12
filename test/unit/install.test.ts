@@ -34,6 +34,8 @@ function makeProductInfo(): ProductInfo {
     release: "1.0.0",
     serverApplicationName: "test-server",
     serverDataFolderName: ".test-server",
+    verifyChecksum: false,
+    onNoChecksum: "warn",
   };
 }
 

@@ -315,4 +315,30 @@ export class VscodiumAdapter implements PlatformAdapter {
     }
     return ids;
   }
+
+  getChecksumConfig(): {
+    checksumMethod?: "sidecar" | "manifest";
+    checksumAlgo?: "sha256" | "md5";
+    manifestTemplate?: string;
+    manifestField?: string;
+  } {
+    switch (this.fork) {
+      case VSCODIUM_CONFIG:
+        return { checksumMethod: "sidecar", checksumAlgo: "sha256" };
+      case TRAE_CONFIG:
+        return { checksumMethod: "sidecar", checksumAlgo: "md5" };
+      case QODER_CONFIG:
+        return { checksumMethod: "sidecar", checksumAlgo: "md5" };
+      case DEVIN_CONFIG:
+        return {
+          checksumMethod: "manifest",
+          manifestTemplate:
+            "https://windsurf-stable.codeiumdata.com/${os}-reh-${arch}/${quality}/manifest-${commit}.json",
+          manifestField: "sha256hash",
+          checksumAlgo: "sha256",
+        };
+      default:
+        return {};
+    }
+  }
 }

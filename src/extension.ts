@@ -39,10 +39,8 @@ export async function activate(
 
   logger.info(`Activating on ${platform.name} (build ${__BUILD_ID__})`);
 
-  // Config webview (VSCodium only - Kiro has no configurable download).
-  if (HAS_VSCODIUM_ADAPTER) {
-    registerConfigPanel(context, logger);
-  }
+  // Config webview - available in all builds.
+  registerConfigPanel(context, logger);
 
   // Check for conflicting SSH-remote extensions before anything else.
   // Only on apex - in remote/ssh/devcontainer contexts there is no
@@ -84,18 +82,33 @@ export async function activate(
     return;
   }
 
+  // Ensure askpass.sh is executable on Unix. VSIX packed on
+  // Windows does not preserve permission bits.
+  if (process.platform !== "win32") {
+    const askpassSh = path.join(context.extensionPath, "scripts", "askpass", "askpass.sh");
+    try {
+      fs.chmodSync(askpassSh, 0o755);
+    } catch {
+      // best-effort; file may not exist in some builds
+    }
+  }
+
   // Initialize the persistent askpass cache before any resolve attempt.
   const storageDir = context.globalStorageUri.fsPath;
   fs.mkdirSync(storageDir, { recursive: true });
   const ttlHours = vscode.workspace
     .getConfiguration("zygos")
     .get<number>("askpassCacheTtl", 8);
-  logger.info(`[activate] askpass cache TTL: ${ttlHours}h`);
+  const rotationDays = vscode.workspace
+    .getConfiguration("zygos")
+    .get<number>("askpassKeyRotationDays", 7);
+  logger.info(`[activate] askpass cache TTL: ${ttlHours}h, key rotation: ${rotationDays}d`);
   await initCache(
     context.secrets,
     path.join(storageDir, "askpass.db"),
     logger,
     ttlHours,
+    rotationDays,
   );
 
   // Register the authority resolver.
@@ -127,6 +140,6 @@ export async function activate(
   logger.info(`Activated on ${platform.name}`);
 }
 
-export function deactivate(): void {
-  void disposeCache();
+export async function deactivate(): Promise<void> {
+  await disposeCache();
 }

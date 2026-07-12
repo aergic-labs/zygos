@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.0] - 2026-07-12
+
+### Added
+
+- Checksum integrity checks for vendor reh downloads (sidecar or
+  manifest, sha256/md5). Per-fork defaults with user override.
+- Busybox binaries from Alpine 3.24, downloaded at build
+  time with pinned SHA256 verification and provenance manifest.
+- CSP nonce on config webview.
+- `checksumMethod` selector in the download config webview.
+- Build instructions in README.
+- Key rotation for askpass cache master key
+  (`zygos.askpassKeyRotationDays`).
+
+### Changed
+
+- Askpass cache writes are now awaited before dispose to prevent
+  data loss.
+- `make package` always re-downloads and verifies busybox.
+
+### Fixed
+
+- Various fixes for config, activation, build.
+- chmod askpass.sh on activation (Unix) to fix missing
+  executable bit from Windows-packed VSIX.
+
 ## [0.0.1] - 2026-07-11
 
 ### Added

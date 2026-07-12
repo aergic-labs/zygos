@@ -40,6 +40,7 @@ h1 { font-size: 1.4em; margin: 0 0 4px; }
 
 .section { display: none; }
 .section.visible { display: block; }
+.hidden { display: none !important; }
 
 .row { margin-bottom: 14px; }
 label {
@@ -146,6 +147,13 @@ button.secondary:hover {
 }
 button:disabled { opacity: 0.5; cursor: default; }
 .button-row { display: flex; gap: 8px; margin-top: 12px; }
+
+h2 {
+  font-size: 1.15em;
+  margin: 24px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
 
 .spinner {
   display: inline-block;

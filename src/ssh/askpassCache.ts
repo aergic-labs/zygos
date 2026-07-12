@@ -37,17 +37,25 @@
  * if the db file's own mtime is older than TTL, the entire file is deleted
  * (cold start after a long absence -> no stale cache). 0 = never expire.
  *
+ * Master key rotation: the master key rotates every 7 days (configurable
+ * via zygos.askpassKeyRotationDays). On rotation, a new key is generated,
+ * the db is deleted, and the new key is stored in SecretStorage. Entries
+ * cannot be re-encrypted because the db key is HMAC(hmacKey, prompt) and
+ * prompts are not recoverable from their hashes. The user is re-prompted
+ * on next use. This limits the master key's exposure window if compromised.
+ * 0 = never rotate.
+ *
  * For key passphrase prompts, the passphrase is validated via ssh-keygen
  * before caching (wrong passphrase is never stored).
  */
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import type * as vscode from "vscode";
 import type { Logger } from "../common/logger";
+import { secureTempDir } from "../common/temp";
 import { Dirty } from "../../vendor/node-dirty/dirty.js";
 
 /** How long a cached secret is valid (ms). 8 hours - roughly a work
@@ -55,11 +63,24 @@ import { Dirty } from "../../vendor/node-dirty/dirty.js";
  * Overridden by the zygos.askpassCacheTtl setting at init time. */
 const DEFAULT_TTL_MS = 8 * 60 * 60 * 1000;
 let TTL_MS = DEFAULT_TTL_MS;
-/** SecretStorage key for the 32-byte master key. */
+/** How often the master key rotates (ms). 7 days by default.
+ * Overridden by the zygos.askpassKeyRotationDays setting at init time.
+ * 0 = never rotate. */
+const DEFAULT_ROTATION_MS = 7 * 24 * 60 * 60 * 1000;
+let ROTATION_MS = DEFAULT_ROTATION_MS;
+/** SecretStorage key for the 32-byte master key + createdAt timestamp. */
 const MASTERKEY_ID = "zygos.askpass.masterkey";
 /** HKDF info strings for subkey derivation. */
 const HMAC_INFO = Buffer.from("zygos/askpass/hmac");
 const AES_INFO = Buffer.from("zygos/askpass/aes");
+
+/** Shape stored in SecretStorage (JSON-encoded). */
+interface MasterKeyRecord {
+  /** 32-byte master key (base64). */
+  key: string;
+  /** When the key was created (epoch ms). */
+  createdAt: number;
+}
 
 /** Plaintext blob (encrypted before storage). */
 interface Plaintext {
@@ -130,14 +151,10 @@ export function validatePassphrase(
 
     const isWin = process.platform === "win32";
     const envVar = `ZYGOS_ASKPASS_${crypto.randomBytes(8).toString("hex")}`;
-    const id = crypto.randomBytes(8).toString("hex");
-    const tmp = os.tmpdir();
-    const jsPath = path.join(tmp, `zygos-ap-${id}.js`);
-    const wrapperPath = path.join(
-      tmp,
-      `zygos-ap-${id}${isWin ? ".cmd" : ".sh"}`,
-    );
     const nodePath = process.execPath;
+    const dir = secureTempDir();
+    const jsPath = path.join(dir, "helper.js");
+    const wrapperPath = path.join(dir, isWin ? "wrapper.cmd" : "wrapper.sh");
 
     fs.writeFileSync(
       jsPath,
@@ -166,8 +183,8 @@ export function validatePassphrase(
       });
       return { valid: true };
     } finally {
-      try { fs.unlinkSync(jsPath); } catch { /* best effort */ }
-      try { fs.unlinkSync(wrapperPath); } catch { /* best effort */ }
+      // secureTempDir is 0o700; rmSync removes the whole dir.
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   } catch (err: unknown) {
     const stderr =
@@ -189,16 +206,20 @@ export async function initCache(
   dbPath: string,
   logger: Logger,
   ttlHours?: number,
+  rotationDays?: number,
 ): Promise<void> {
   TTL_MS = ttlHours === undefined ? DEFAULT_TTL_MS : ttlHours * 60 * 60 * 1000;
+  ROTATION_MS = rotationDays === undefined ? DEFAULT_ROTATION_MS : rotationDays * 24 * 60 * 60 * 1000;
   instance = new PersistentAskpassCache(secrets, dbPath, logger);
   await instance.init();
 }
 
 /** Dispose the cache and close the db file. Call in deactivate(). */
 export async function disposeCache(): Promise<void> {
-  instance?.dispose();
-  instance = undefined;
+  if (instance) {
+    await instance.dispose();
+    instance = undefined;
+  }
 }
 
 /** Look up a cached secret. Returns undefined if missing, expired, or
@@ -243,14 +264,34 @@ class PersistentAskpassCache {
 
   async init(): Promise<void> {
     // Load or generate the 32-byte master key from SecretStorage.
+    // The key is stored as JSON { key, createdAt } to support rotation.
+    // Migrate from the old format (bare base64 string) if needed.
     const raw = await this.secrets.get(MASTERKEY_ID);
     let masterKey: Buffer;
+    let createdAt: number;
     if (!raw) {
       masterKey = crypto.randomBytes(32);
-      await this.secrets.store(MASTERKEY_ID, masterKey.toString("base64"));
+      createdAt = Date.now();
+      await this.secrets.store(
+        MASTERKEY_ID,
+        JSON.stringify({ key: masterKey.toString("base64"), createdAt }),
+      );
       this.logger.info("[askpass-cache] generated new master key");
     } else {
-      masterKey = Buffer.from(raw, "base64");
+      // Try parsing as JSON first. Fall back to old bare-base64 format.
+      let record: MasterKeyRecord;
+      try {
+        record = JSON.parse(raw) as MasterKeyRecord;
+        if (!record.key || typeof record.createdAt !== "number") {
+          throw new Error("invalid format");
+        }
+      } catch {
+        // Old format: raw was a bare base64 string. Migrate it.
+        record = { key: raw, createdAt: Date.now() };
+        this.logger.info("[askpass-cache] migrating master key to new format");
+      }
+      masterKey = Buffer.from(record.key, "base64");
+      createdAt = record.createdAt;
       this.logger.info("[askpass-cache] loaded existing master key");
     }
 
@@ -284,6 +325,26 @@ class PersistentAskpassCache {
     }
 
     // Open the dirty db.
+    await this.openDb();
+
+    // Restrict file permissions on Unix.
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(this.dbPath, 0o600); } catch { /* best effort */ }
+    }
+
+    this.logger.info(`[askpass-cache] initialized (db=${this.dbPath})`);
+
+    // Check if the master key needs rotation.
+    if (ROTATION_MS > 0 && Date.now() - createdAt > ROTATION_MS) {
+      await this.rotateMasterKey(masterKey, createdAt);
+    }
+
+    // Sweep expired entries from previous sessions.
+    await this.sweep();
+  }
+
+  /** Open (or reopen) the dirty db file and wait for it to load. */
+  private async openDb(): Promise<void> {
     this.db = new Dirty(this.dbPath) as Dirty<EncryptedEntry>;
     await new Promise<void>((resolve, reject) => {
       const onLoad = () => { cleanup(); resolve(); };
@@ -295,16 +356,57 @@ class PersistentAskpassCache {
       this.db!.on("load", onLoad);
       this.db!.on("error", onError);
     });
+  }
 
-    // Restrict file permissions on Unix.
+  /**
+   * Rotate the master key: generate a new key, delete all cached
+   * entries (they can't be re-encrypted without the original prompts),
+   * and store the new key in SecretStorage.
+   *
+   * The db key is HMAC(hmacKey, prompt). When the hmacKey changes, all
+   * db keys change. We can't recover prompts from their hashes, so
+   * re-encryption is impossible. Dropping entries is the correct
+   * approach - the user is re-prompted once per entry on next use,
+   * same as a cold start. The benefit is limiting the master key's
+   * lifetime: if compromised, the exposure window is bounded.
+   *
+   * Race: two windows could rotate simultaneously. Both delete the db,
+   * both write a new key. The loser's key is overwritten in
+   * SecretStorage. On next read, GCM auth tag catches the mismatch,
+   * entry is evicted. Harmless - cache was empty anyway.
+   */
+  private async rotateMasterKey(
+    _oldKey: Buffer,
+    oldCreatedAt: number,
+  ): Promise<void> {
+    this.logger.info("[askpass-cache] rotating master key");
+
+    const newKey = crypto.randomBytes(32);
+    const newCreatedAt = Date.now();
+
+    // Delete the old db - entries can't be re-encrypted without prompts.
+    this.db!.close();
+    try { fs.unlinkSync(this.dbPath); } catch { /* may not exist */ }
+
+    // Store new key in SecretStorage.
+    await this.secrets.store(
+      MASTERKEY_ID,
+      JSON.stringify({ key: newKey.toString("base64"), createdAt: newCreatedAt }),
+    );
+
+    // Update in-memory subkeys.
+    this.hmacKey = Buffer.from(crypto.hkdfSync("sha256", newKey, Buffer.alloc(0), HMAC_INFO, 32));
+    this.aesKey = Buffer.from(crypto.hkdfSync("sha256", newKey, Buffer.alloc(0), AES_INFO, 32));
+
+    // Reopen a fresh db.
+    await this.openDb();
     if (process.platform !== "win32") {
       try { fs.chmodSync(this.dbPath, 0o600); } catch { /* best effort */ }
     }
 
-    this.logger.info(`[askpass-cache] initialized (db=${this.dbPath})`);
-
-    // Sweep expired entries from previous sessions.
-    await this.sweep();
+    this.logger.info(
+      `[askpass-cache] master key rotated (was ${new Date(oldCreatedAt).toISOString()}, cache cleared)`,
+    );
   }
 
   /** Derive the dirty db key from a prompt via HMAC-SHA256. */
@@ -406,13 +508,23 @@ class PersistentAskpassCache {
     };
 
     const entry = this.encrypt(plain);
-    this.db.set(this.dbKey(prompt), entry);
+    await new Promise<void>((resolve, reject) => {
+      this.db!.set(this.dbKey(prompt), entry, (err?: Error) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
     return { stored: true };
   }
 
   async evict(prompt: string): Promise<void> {
     if (!this.db || !this.hmacKey) return;
-    this.db.rm(this.dbKey(prompt));
+    await new Promise<void>((resolve, reject) => {
+      this.db!.rm(this.dbKey(prompt), (err?: Error) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
   }
 
   async sweep(): Promise<void> {
@@ -451,17 +563,7 @@ class PersistentAskpassCache {
     if (this.db.size() === 0) {
       this.db.close();
       try { fs.unlinkSync(this.dbPath); } catch { /* may not exist */ }
-      this.db = new Dirty(this.dbPath) as Dirty<EncryptedEntry>;
-      await new Promise<void>((resolve, reject) => {
-        const onLoad = () => { cleanup(); resolve(); };
-        const onError = (err: Error) => { cleanup(); reject(err); };
-        const cleanup = () => {
-          this.db!.off("load", onLoad);
-          this.db!.off("error", onError);
-        };
-        this.db!.on("load", onLoad);
-        this.db!.on("error", onError);
-      });
+      await this.openDb();
     }
   }
 
@@ -469,13 +571,39 @@ class PersistentAskpassCache {
     if (!this.db) return;
     const keys: string[] = [];
     this.db.forEach((key) => { keys.push(key); });
-    for (const key of keys) {
-      this.db.rm(key);
-    }
+    const promises = keys.map((key) =>
+      new Promise<void>((resolve, reject) => {
+        this.db!.rm(key, (err?: Error) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      }),
+    );
+    await Promise.all(promises);
   }
 
-  dispose(): void {
-    this.db?.close();
+  async dispose(): Promise<void> {
+    if (this.db) {
+      const db = this.db;
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        db.once("write_close", finish);
+        db.once("read_close", () => {
+          // If there's no write stream, read_close is the only signal.
+          const w = (db as any)._writeStream;
+          if (!w) finish();
+        });
+        db.close();
+        // If close() completed synchronously (no streams at all), resolve.
+        if (!(db as any)._queue?.size
+          && (db as any)._inFlightWrites <= 0
+          && !(db as any)._readStream
+          && !(db as any)._writeStream) {
+          finish();
+        }
+      });
+    }
     this.db = undefined;
     this.hmacKey = undefined;
     this.aesKey = undefined;

@@ -4,6 +4,7 @@
  */
 
 import * as vscode from "vscode";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { detectPlatform, getProductInfo } from "../platform";
 import { buildServerDownloadUrl, resolveTemplateUrl } from "../server/url";
@@ -12,7 +13,8 @@ import type { Logger } from "../common/logger";
 
 declare const HAS_VSCODIUM_ADAPTER: boolean;
 
-/** Read the webview HTML and substitute the script/style webview URIs. */
+/** Read the webview HTML and substitute the script/style webview URIs
+ * plus a per-panel nonce for CSP. */
 function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const webviewDir = vscode.Uri.joinPath(extensionUri, "resources", "webview");
   const scriptUri = webview.asWebviewUri(
@@ -22,9 +24,11 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     vscode.Uri.joinPath(webviewDir, "styles.css"),
   );
   const htmlPath = vscode.Uri.joinPath(webviewDir, "index.html").fsPath;
+  const nonce = crypto.randomUUID();
   let html = fs.readFileSync(htmlPath, "utf-8");
-  html = html.replace("${SCRIPT_URI}", scriptUri.toString());
-  html = html.replace("${STYLE_URI}", styleUri.toString());
+  html = html.replaceAll("${SCRIPT_URI}", scriptUri.toString());
+  html = html.replaceAll("${STYLE_URI}", styleUri.toString());
+  html = html.replaceAll("${NONCE}", nonce);
   return html;
 }
 
@@ -64,6 +68,9 @@ export function registerConfigPanel(
             case "resolveUrl":
               await handleResolveUrl(panel, logger, msg.template, os, arch);
               break;
+            case "resolveManifestUrl":
+              await handleResolveManifestUrl(panel, logger, msg.template, os, arch);
+              break;
             case "testUrl":
               await handleTestUrl(panel, logger, msg.url, msg.which);
               break;
@@ -98,6 +105,12 @@ interface PanelState {
   forkTemplates: typeof FORK_TEMPLATES;
   variables: VariableValue[];
   cdnVersionAsync: boolean;
+  checksumMethod: string;
+  checksumAlgo: string;
+  manifestTemplate: string;
+  manifestField: string;
+  verifyChecksum: boolean;
+  onNoChecksum: string;
 }
 
 /** Build the variable table: only non-empty values are included. */
@@ -157,6 +170,12 @@ async function sendState(
     forkTemplates: FORK_TEMPLATES,
     variables: buildVariables(info, os, arch),
     cdnVersionAsync: false,
+    checksumMethod: info.checksumMethod ?? "sidecar",
+    checksumAlgo: info.checksumAlgo ?? "",
+    manifestTemplate: info.manifestTemplate ?? "",
+    manifestField: info.manifestField ?? "",
+    verifyChecksum: info.verifyChecksum,
+    onNoChecksum: info.onNoChecksum,
   };
 
   await panel.webview.postMessage({ type: "state", state, isRefresh: !isFirst });
@@ -210,6 +229,44 @@ async function handleResolveUrl(
   }
 }
 
+async function handleResolveManifestUrl(
+  panel: vscode.WebviewPanel,
+  logger: Logger,
+  template: string,
+  os: string,
+  arch: string,
+): Promise<void> {
+  if (!template || !template.trim()) {
+    await panel.webview.postMessage({
+      type: "resolvedManifestUrl",
+      url: "",
+    });
+    return;
+  }
+
+  try {
+    const platform = detectPlatform();
+    const info = getProductInfo(platform);
+    const { url, unresolved } = await resolveTemplateUrl(
+      template,
+      info,
+      os,
+      arch,
+    );
+    await panel.webview.postMessage({
+      type: "resolvedManifestUrl",
+      url,
+      unresolved,
+    });
+  } catch (err) {
+    logger.error(`[configPanel] manifest template resolve failed: ${err}`);
+    await panel.webview.postMessage({
+      type: "resolvedManifestUrl",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 interface TestResult {
   ok: boolean;
   status?: number;
@@ -217,6 +274,37 @@ interface TestResult {
   contentLength?: string;
   contentType?: string;
   error?: string;
+}
+
+/** Validate a URL is safe to fetch: https-only, no private/loopback
+ * hosts. Prevents SSRF via crafted webview messages. */
+function validateFetchUrl(raw: string): URL | string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "Invalid URL";
+  }
+  if (url.protocol !== "https:") {
+    return "Only HTTPS URLs are allowed";
+  }
+  const host = url.hostname.toLowerCase();
+  // Reject loopback, private, link-local, and cloud metadata endpoints.
+  const blocked =
+    host === "localhost" ||
+    host === "metadata.google.internal" ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) ||
+    /^::1$/.test(host) ||
+    /^fe[89ab][0-9a-f]:/i.test(host) ||
+    /^\[::1\]$/.test(host);
+  if (blocked) {
+    return "Private/loopback hosts are not allowed";
+  }
+  return url;
 }
 
 async function handleTestUrl(
@@ -229,10 +317,17 @@ async function handleTestUrl(
 
   const result: TestResult = { ok: false };
 
+  const validated = validateFetchUrl(url);
+  if (typeof validated === "string") {
+    result.error = validated;
+    await panel.webview.postMessage({ type: "testResult", result, which });
+    return;
+  }
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15_000);
-    const res = await fetch(url, {
+    const res = await fetch(validated, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,
@@ -279,6 +374,12 @@ interface ApplyMsg {
   binaryName: string;
   which?: string;
   mode?: string;
+  checksumMethod?: string;
+  checksumAlgo?: string;
+  manifestTemplate?: string;
+  manifestField?: string;
+  verifyChecksum?: boolean;
+  onNoChecksum?: string;
 }
 
 async function handleApply(
@@ -315,7 +416,25 @@ async function writeSettingsDirect(msg: ApplyMsg, logger: Logger): Promise<void>
   const templateVal = modeVal === "custom" ? msg.template.trim() : "";
   const binaryVal = msg.binaryName.trim();
 
-  const sd = { mode: modeVal, template: templateVal, binaryName: binaryVal };
+  // Checksum settings are always written (apply in both modes).
+  const checksumMethod = msg.checksumMethod ?? "sidecar";
+  const checksumAlgo = msg.checksumAlgo ?? "";
+  const manifestTemplate = msg.manifestTemplate?.trim() ?? "";
+  const manifestField = msg.manifestField?.trim() ?? "";
+  const verifyChecksum = msg.verifyChecksum !== false;
+  const onNoChecksum = msg.onNoChecksum ?? "warn";
+
+  const sd = {
+    mode: modeVal,
+    template: templateVal,
+    binaryName: binaryVal,
+    checksumMethod,
+    checksumAlgo,
+    manifestTemplate,
+    manifestField,
+    verifyChecksum,
+    onNoChecksum,
+  };
 
   logger.info(`[configPanel] writeSettingsDirect sd=${JSON.stringify(sd)}`);
 

@@ -7,6 +7,12 @@ dist/
 downloads/
 *.vsix
 
+# Downloaded binaries (run: make busybox)
+tools/busybox/bb-*
+tools/busybox/.downloaded
+# Generated at build time
+tools/busybox/provenance.json
+
 upstream/
 tmp/
 research/

@@ -19,10 +19,12 @@ development stack: SSH host + devcontainer chaining via `resolveExecServer`.
   no port forwarding to manage.
 - **Auto-detected server download** - reads `product.json` to build the
   correct server tarball URL for each fork (VSCodium, Trae, Antigravity,
-  Qoder, etc.). A configuration wizard lets you override with a custom
-  template and test it before applying.
+  Qoder, etc.). Server tarballs are checksum-verified before extraction.
+  A configuration wizard lets you override with a custom template and
+  test it before applying.
 - **Server bootstrap** - vendored busybox provides a known POSIX env on
-  the remote; server tarball streamed client-side over stdin.
+  the remote, verified against pinned SHA256 with provenance manifest;
+  server tarball streamed client-side over stdin.
 - **Server reuse** - detects and reuses an existing running server across
   windows instead of killing and restarting.
 - **Sleep/wake resilience** - timer-skew detection repairs the SSH tunnel
@@ -50,10 +52,53 @@ from scratch.
 
 ## Requirements
 
+End users:
+
 - A supported editor (see above)
 - An `ssh` binary on your PATH (OpenSSH 8+ recommended)
 
-Everything else is bundled with the extension.
+Building from source also requires:
+
+- Node.js 18+
+- npm (includes npx)
+- GNU Make
+- Internet access (to install dev dependencies and download busybox
+  binaries from the Alpine CDN)
+
+## Building from source
+
+```sh
+git clone https://github.com/aergic-labs/zygos.git
+cd zygos
+npm install
+make package
+```
+
+This produces two VSIX files:
+
+- `zygos-kiro-0.1.0.vsix`
+- `zygos-vscodium-0.1.0.vsix`
+
+Install the one matching your editor.
+
+### Busybox binaries
+
+The extension ships a statically-linked busybox binary for the remote
+bootstrap (x64 and arm64). These are not committed to the repo. `make
+package` downloads them automatically from the Alpine Linux CDN,
+verifies the APK and binary SHA256 against pinned values in
+`tools/busybox/checksums.json`, and writes a `provenance.json` manifest
+that ships in the VSIX.
+
+To upgrade busybox:
+
+1. Find the new `busybox-static` package version on the
+   [Alpine package index](https://pkgs.alpinelinux.org/packages?name=busybox-static)
+2. Download the APKs and compute their SHA256
+3. Update `tools/busybox/checksums.json` with the new version and hashes
+4. Run `make busybox` to download and verify
+
+See `tools/busybox/PROVENANCE.md` for full details.
 
 ## Getting started
 

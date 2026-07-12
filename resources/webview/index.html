@@ -3,7 +3,11 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <link rel="stylesheet" href="${STYLE_URI}" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'none'; script-src 'nonce-${NONCE}'; style-src 'nonce-${NONCE}';"
+        />
+        <link rel="stylesheet" href="${STYLE_URI}" nonce="${NONCE}" />
         <title>Zygos Server Download</title>
     </head>
     <body>
@@ -50,7 +54,7 @@
 
         <!-- Custom section (editor) -->
         <div class="section" id="customSection">
-            <div class="row">
+            <div class="row" id="forkSelectRow">
                 <label for="forkSelect">Fork template</label>
                 <select id="forkSelect"></select>
                 <div class="desc">
@@ -98,6 +102,92 @@
             </div>
         </div>
 
-        <script src="${SCRIPT_URI}"></script>
+        <!-- Checksum section (always visible) -->
+        <div class="section visible" id="checksumSection">
+            <h2>Checksum</h2>
+
+            <div class="row">
+                <label for="verifyChecksumToggle">Verify checksum</label>
+                <select id="verifyChecksumToggle">
+                    <option value="true">Enabled (recommended)</option>
+                    <option value="false">Disabled</option>
+                </select>
+            </div>
+
+            <div class="row">
+                <label for="checksumMethodSelect">Checksum method</label>
+                <select id="checksumMethodSelect">
+                    <option value="sidecar">Sidecar URL</option>
+                    <option value="manifest">Manifest URL</option>
+                </select>
+                <div class="desc">
+                    Sidecar: fetch download URL + "." + algo. Manifest: fetch JSON and extract hash field.
+                </div>
+            </div>
+
+            <div class="row" id="sidecarRow">
+                <label for="checksumAlgoSelect">Sidecar algorithm</label>
+                <select id="checksumAlgoSelect">
+                    <option value="">(auto from fork)</option>
+                    <option value="sha256">SHA-256</option>
+                    <option value="md5">MD5</option>
+                </select>
+                <div class="url-box empty hidden" id="sidecarUrl"></div>
+                <div class="test-result" id="sidecarTestResult"></div>
+                <div class="button-row hidden" id="sidecarBtnRow">
+                    <button
+                        class="secondary"
+                        data-action="test-sidecar"
+                        id="sidecarTestBtn"
+                    >
+                        Test Sidecar URL
+                    </button>
+                </div>
+            </div>
+
+            <div class="row hidden" id="manifestRow">
+                <label for="manifestTemplateInput">Manifest URL template</label>
+                <input
+                    type="text"
+                    id="manifestTemplateInput"
+                    placeholder="https://..."
+                />
+                <div class="url-box empty hidden" id="manifestUrl"></div>
+                <div class="test-result" id="manifestTestResult"></div>
+                <div class="button-row hidden" id="manifestBtnRow">
+                    <button
+                        class="secondary"
+                        data-action="test-manifest"
+                        id="manifestTestBtn"
+                    >
+                        Test Manifest URL
+                    </button>
+                </div>
+            </div>
+
+            <div class="row hidden" id="manifestFieldRow">
+                <label for="manifestFieldInput">Manifest hash field</label>
+                <input
+                    type="text"
+                    id="manifestFieldInput"
+                    placeholder="e.g. sha256hash"
+                />
+            </div>
+
+            <div class="row">
+                <label for="onNoChecksumSelect">When no checksum available</label>
+                <select id="onNoChecksumSelect">
+                    <option value="warn">Warn and proceed (default)</option>
+                    <option value="allow">Allow silently</option>
+                    <option value="abort">Abort installation</option>
+                </select>
+            </div>
+
+            <div class="button-row">
+                <button data-action="apply-checksum">Apply</button>
+            </div>
+        </div>
+
+        <script src="${SCRIPT_URI}" nonce="${NONCE}"></script>
     </body>
 </html>

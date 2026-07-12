@@ -22,25 +22,22 @@ document.addEventListener("click", (e) => {
     case "test-custom":
       runTest("custom", $("previewUrl").textContent);
       break;
+    case "test-sidecar":
+      runTest("sidecar", $("sidecarUrl").textContent);
+      break;
+    case "test-manifest":
+      runTest("manifest", $("manifestUrl").textContent);
+      break;
     case "switch-mode": {
       const newMode = state?.downloadMode === "custom" ? "auto" : "custom";
-      vscode.postMessage({
-        type: "apply",
-        template: $("templateInput").value,
-        binaryName: $("binaryNameInput").value,
-        which: newMode,
-        mode: newMode,
-      });
+      sendApply(newMode);
       break;
     }
     case "apply":
-      vscode.postMessage({
-        type: "apply",
-        template: $("templateInput").value,
-        binaryName: $("binaryNameInput").value,
-        which: "custom",
-        mode: "custom",
-      });
+      sendApply("custom");
+      break;
+    case "apply-checksum":
+      sendApply(state?.downloadMode || "auto", "checksum");
       break;
   }
 });
@@ -52,6 +49,12 @@ $("forkSelect").addEventListener("change", () => {
   );
   if (fork) {
     $("templateInput").value = fork.template;
+    $("checksumMethodSelect").value = fork.checksumMethod ?? "sidecar";
+    $("checksumAlgoSelect").value = fork.checksumAlgo ?? "";
+    $("manifestTemplateInput").value = fork.manifestTemplate ?? "";
+    $("manifestFieldInput").value = fork.manifestField ?? "";
+    updateChecksumMethod();
+
     updatePreview();
     renderVars();
   }
@@ -62,6 +65,46 @@ $("templateInput").addEventListener("input", () => {
   updatePreview();
   renderVars();
 });
+
+// --- checksum method selector ---
+$("checksumMethodSelect").addEventListener("change", updateChecksumMethod);
+
+// --- checksum algo: update sidecar URL ---
+$("checksumAlgoSelect").addEventListener("change", updateSidecarUrl);
+
+// --- manifest template: live resolve ---
+$("manifestTemplateInput").addEventListener("input", updateManifestUrl);
+
+function updateChecksumMethod() {
+  const method = $("checksumMethodSelect").value;
+  if (method === "manifest") {
+    $("sidecarRow").classList.add("hidden");
+    $("manifestRow").classList.remove("hidden");
+    $("manifestFieldRow").classList.remove("hidden");
+    updateManifestUrl();
+  } else {
+    $("sidecarRow").classList.remove("hidden");
+    $("manifestRow").classList.add("hidden");
+    $("manifestFieldRow").classList.add("hidden");
+    updateSidecarUrl();
+  }
+}
+
+function sendApply(mode, which) {
+  vscode.postMessage({
+    type: "apply",
+    template: $("templateInput").value,
+    binaryName: $("binaryNameInput").value,
+    which: which || mode,
+    mode,
+    checksumMethod: $("checksumMethodSelect").value,
+    checksumAlgo: $("checksumAlgoSelect").value,
+    manifestTemplate: $("manifestTemplateInput").value,
+    manifestField: $("manifestFieldInput").value,
+    verifyChecksum: $("verifyChecksumToggle").value === "true",
+    onNoChecksum: $("onNoChecksumSelect").value,
+  });
+}
 
 function updateMode() {
   const mode = state?.downloadMode || "auto";
@@ -80,12 +123,80 @@ function updateMode() {
     $("customSection").classList.add("visible");
     switchBtn.textContent = "Switch to Auto";
   }
+
+  // Hide fork picker if there are <= 2 templates (one fork + custom).
+  const forkCount = state?.forkTemplates?.length ?? 0;
+  const forkRow = $("forkSelectRow");
+  if (forkRow) {
+    forkRow.style.display = forkCount > 2 ? "" : "none";
+  }
 }
 
 function updatePreview() {
   vscode.postMessage({
     type: "resolveUrl",
     template: $("templateInput").value,
+  });
+}
+
+/** Sidecar URL = resolved download URL + "." + algo.
+ * Computed client-side from the auto/custom URL box + algo dropdown. */
+function updateSidecarUrl() {
+  const algo = $("checksumAlgoSelect").value;
+  const btnRow = $("sidecarBtnRow");
+  const urlBox = $("sidecarUrl");
+  const resultEl = $("sidecarTestResult");
+  resultEl.className = "test-result";
+  resultEl.textContent = "";
+
+  if (!algo) {
+    urlBox.textContent = "";
+    urlBox.className = "url-box empty hidden";
+    btnRow.classList.add("hidden");
+    return;
+  }
+
+  const downloadUrl = $("customSection").classList.contains("visible")
+    ? $("previewUrl").textContent
+    : $("autoUrl").textContent;
+  if (
+    !downloadUrl ||
+    downloadUrl.includes("${") ||
+    downloadUrl === "Resolving..." ||
+    downloadUrl === "(empty)"
+  ) {
+    urlBox.textContent = "";
+    urlBox.className = "url-box empty hidden";
+    btnRow.classList.add("hidden");
+    return;
+  }
+
+  const sidecarUrl = downloadUrl + "." + algo;
+  urlBox.textContent = sidecarUrl;
+  urlBox.className = "url-box";
+  btnRow.classList.remove("hidden");
+}
+
+/** Resolve manifest template via the extension. */
+function updateManifestUrl() {
+  const template = $("manifestTemplateInput").value.trim();
+  const btnRow = $("manifestBtnRow");
+  const urlBox = $("manifestUrl");
+  const resultEl = $("manifestTestResult");
+  resultEl.className = "test-result";
+  resultEl.textContent = "";
+
+  if (!template) {
+    urlBox.textContent = "";
+    urlBox.className = "url-box empty hidden";
+    btnRow.classList.add("hidden");
+    return;
+  }
+
+  btnRow.classList.remove("hidden");
+  vscode.postMessage({
+    type: "resolveManifestUrl",
+    template,
   });
 }
 
@@ -147,7 +258,6 @@ function addVarRow(tbl, name, value) {
 // --- messages from the extension ---
 window.addEventListener("message", (e) => {
   const msg = e.data;
-  console.log("[zygos] RX", JSON.stringify(msg).slice(0, 500));
   switch (msg.type) {
     case "state": {
       state = msg.state;
@@ -157,6 +267,7 @@ window.addEventListener("message", (e) => {
         $("binaryNameInput").value = state.binaryName;
       }
 
+      // Populate fork select
       const sel = $("forkSelect");
       sel.innerHTML = "";
       for (const f of state.forkTemplates) {
@@ -169,8 +280,6 @@ window.addEventListener("message", (e) => {
       if (state.downloadMode === "custom" && state.currentTemplate) {
         $("templateInput").value = state.currentTemplate;
       } else {
-        // No saved template (auto mode, or custom with no template set).
-        // Pre-fill from the first fork in the dropdown so Apply has an effect.
         const firstFork = state.forkTemplates?.[0];
         if (firstFork && firstFork.template) {
           $("templateInput").value = firstFork.template;
@@ -181,9 +290,25 @@ window.addEventListener("message", (e) => {
         setUrlBox("autoUrl", state.resolvedUrl);
         setUrlBox("previewUrl", state.resolvedUrl);
       }
+
+      // Checksum fields
+      $("checksumMethodSelect").value = state.checksumMethod || "sidecar";
+      if (state.checksumAlgo) {
+        $("checksumAlgoSelect").value = state.checksumAlgo;
+      }
+      if (state.manifestTemplate) {
+        $("manifestTemplateInput").value = state.manifestTemplate;
+      }
+      if (state.manifestField) {
+        $("manifestFieldInput").value = state.manifestField;
+      }
+      $("verifyChecksumToggle").value = state.verifyChecksum ? "true" : "false";
+      $("onNoChecksumSelect").value = state.onNoChecksum || "warn";
+
       updatePreview();
       renderVars();
       updateMode();
+      updateChecksumMethod();
       break;
     }
 
@@ -197,6 +322,20 @@ window.addEventListener("message", (e) => {
         }
         setUrlBox("previewUrl", text);
       }
+      updateSidecarUrl();
+      break;
+    }
+
+    case "resolvedManifestUrl": {
+      if (msg.error) {
+        setUrlBox("manifestUrl", "Error: " + msg.error);
+      } else if (msg.url) {
+        let text = msg.url;
+        if (msg.unresolved && msg.unresolved.length > 0) {
+          text += "\n\nUnresolved: " + msg.unresolved.join(", ");
+        }
+        setUrlBox("manifestUrl", text);
+      }
       break;
     }
 
@@ -205,7 +344,13 @@ window.addEventListener("message", (e) => {
       const btn = $(which + "TestBtn");
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "Test URL";
+        const labels = {
+          auto: "Test URL",
+          custom: "Test URL",
+          sidecar: "Test Sidecar URL",
+          manifest: "Test Manifest URL",
+        };
+        btn.textContent = labels[which] || "Test URL";
       }
       const r = msg.result;
       if (r.ok) {
@@ -234,6 +379,8 @@ window.addEventListener("message", (e) => {
           true,
           which === "auto" ? "Switched to auto." : "Switched to custom.",
         );
+      } else if (which === "checksum") {
+        showTestResult("sidecar", true, "Checksum settings saved.");
       } else {
         showTestResult("custom", true, "Settings saved.");
       }
@@ -253,4 +400,5 @@ function setUrlBox(id, text) {
   const el = $(id);
   el.textContent = text;
   el.classList.remove("empty");
+  el.classList.remove("hidden");
 }

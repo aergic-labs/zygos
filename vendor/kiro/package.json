@@ -21,16 +21,12 @@
   },
   "__strip": {
     "activationEvents": [
-      "onCommand:zygos.configureServerDownload",
       "onCommand:zygos.testDownloadUrl"
     ],
     "commands": [
-      "zygos.configureServerDownload",
       "zygos.testDownloadUrl",
       "zygos.showConflictInfo"
     ],
-    "configuration": [
-      "zygos.serverDownload"
-    ]
+    "configuration": []
   }
 }

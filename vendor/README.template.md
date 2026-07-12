@@ -19,10 +19,12 @@ development stack: SSH host + devcontainer chaining via
 - **Managed SOCKS transport** - `ssh -D` SOCKS5 + `ManagedMessagePassing`,
   no port forwarding to manage.
 - **Auto-detected server download** - reads `product.json` to build the
-  correct server tarball URL for each fork. A configuration wizard lets
-  you override with a custom template and test it before applying.
+  correct server tarball URL for each fork. Server tarballs are
+  checksum-verified before extraction. A configuration wizard lets you
+  override with a custom template and test it before applying.
 - **Server bootstrap** - vendored busybox provides a known POSIX env on
-  the remote; server tarball streamed client-side over stdin.
+  the remote, verified against pinned SHA256 with provenance manifest;
+  server tarball streamed client-side over stdin.
 - **Server reuse** - detects and reuses an existing running server across
   windows instead of killing and restarting.
 - **Sleep/wake resilience** - timer-skew detection repairs the SSH tunnel
@@ -59,7 +61,11 @@ Everything else is bundled with the extension.
 | `zygos.logLevel` | `info` | Output channel log level: `info`, `debug`, `trace`. |
 | `zygos.askpass` | `true` | Show password/passphrase prompts as VS Code input boxes. |
 | `zygos.askpassCacheTtl` | `8` | Hours that cached passphrases survive. 0 = never expire. |
+| `zygos.askpassKeyRotationDays` | `7` | Days before the askpass cache master key rotates. 0 = never. |
 | `zygos.defaultExtensions` | `[]` | Extension IDs to install on every SSH host. |
+| `zygos.serverDownload` | `{}` | Server download config. Use the wizard (**Zygos Remote SSH: Configure Server Download**) instead of editing directly. |
+| `zygos.httpProxy` | `""` | HTTP proxy URL to forward to the remote server. |
+| `zygos.httpsProxy` | `""` | HTTPS proxy URL to forward to the remote server. |
 
 ## License
 

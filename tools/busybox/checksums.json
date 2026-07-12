@@ -1,0 +1,19 @@
+{
+  "alpineVersion": "3.24",
+  "binaries": [
+    {
+      "alpineArch": "x86_64",
+      "runtimeArch": "x64",
+      "packageVersion": "1.37.0-r31",
+      "apkSha256": "b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734",
+      "binarySha256": "1690ed6db71fa35621537580135deb8de4f55f30a50d9d591050256e334cd8b9"
+    },
+    {
+      "alpineArch": "aarch64",
+      "runtimeArch": "arm64",
+      "packageVersion": "1.37.0-r31",
+      "apkSha256": "965777e06b94bf11981d5f4ecdfcd577879f4b0dda544294d1dd3f72b217bc75",
+      "binarySha256": "999cb969d09093a71716cfc747bb53cdada3f332c05eb5046c56e0f66a4d6d22"
+    }
+  ]
+}

@@ -79,8 +79,8 @@ export function getProductInfo(adapter: PlatformAdapter): ProductInfo {
   // Server download config is a single object: { mode, template, binaryName }.
   // mode "auto" (default) = use adapter detection. "custom" = use template.
   const config = vscode.workspace.getConfiguration("zygos");
-  const sd = config.get<Record<string, string>>("serverDownload", {});
-  const downloadMode = sd.mode || "auto";
+  const sd = config.get<Record<string, unknown>>("serverDownload", {});
+  const downloadMode = typeof sd.mode === "string" ? sd.mode : "auto";
 
   let serverDownloadUrlTemplate: string | undefined;
   if (downloadMode === "custom") {
@@ -91,6 +91,33 @@ export function getProductInfo(adapter: PlatformAdapter): ProductInfo {
   // Optional server binary name override.
   const userBinaryName = typeof sd.binaryName === "string" ? sd.binaryName.trim() : "";
   const finalServerApp = userBinaryName || serverApplicationName;
+
+  // Checksum config: user settings override adapter defaults.
+  // In custom mode, only user settings apply (no fork default).
+  const adapterChecksum = adapter.getChecksumConfig?.();
+  const userChecksumAlgo = typeof sd.checksumAlgo === "string" ? sd.checksumAlgo : "";
+  const userManifestTemplate = typeof sd.manifestTemplate === "string" ? sd.manifestTemplate.trim() : "";
+  const userManifestField = typeof sd.manifestField === "string" ? sd.manifestField.trim() : "";
+
+  // User overrides take precedence; fall back to adapter defaults.
+  const userChecksumMethod = typeof sd.checksumMethod === "string" ? sd.checksumMethod : "";
+  const checksumMethod =
+    userChecksumMethod === "sidecar" || userChecksumMethod === "manifest"
+      ? (userChecksumMethod as "sidecar" | "manifest")
+      : adapterChecksum?.checksumMethod;
+  const checksumAlgo =
+    userChecksumAlgo === "sha256" || userChecksumAlgo === "md5"
+      ? (userChecksumAlgo as "sha256" | "md5")
+      : adapterChecksum?.checksumAlgo;
+  const manifestTemplate = userManifestTemplate || adapterChecksum?.manifestTemplate;
+  const manifestField = userManifestField || adapterChecksum?.manifestField;
+
+  const verifyChecksum = sd.verifyChecksum !== false;
+  const onNoChecksumRaw = typeof sd.onNoChecksum === "string" ? sd.onNoChecksum : "warn";
+  const onNoChecksum =
+    onNoChecksumRaw === "allow" || onNoChecksumRaw === "abort"
+      ? (onNoChecksumRaw as "allow" | "abort")
+      : "warn";
 
   return {
     commit,
@@ -103,6 +130,12 @@ export function getProductInfo(adapter: PlatformAdapter): ProductInfo {
     serverApplicationName: finalServerApp,
     serverDataFolderName,
     serverDownloadUrlTemplate,
+    checksumMethod,
+    checksumAlgo,
+    manifestTemplate,
+    manifestField,
+    verifyChecksum,
+    onNoChecksum,
   };
 }
 

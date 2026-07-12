@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -176,7 +176,7 @@
         "zygos.serverDownload": {
           "type": "object",
           "default": {},
-          "markdownDescription": "**Use the [configuration wizard](command:zygos.configureServerDownload) instead of editing here.** The wizard provides auto-detection, fork templates, a test button, and guided setup.\n\nAdvanced: this object holds `mode` (\"auto\" or \"custom\"), `template` (URL template, used when mode is custom), and `binaryName` (override for server binary name).",
+          "markdownDescription": "**Use the [configuration wizard](command:zygos.configureServerDownload) instead of editing here.** The wizard provides auto-detection, fork templates, a test button, checksum setup, and guided configuration.\n\nAdvanced: this object holds `mode` (\"auto\" or \"custom\"), `template` (URL template, used when mode is custom), `binaryName` (override for server binary name), `checksumMethod` (\"sidecar\" or \"manifest\"), `checksumAlgo` (\"sha256\" | \"md5\" | \"\"), `manifestTemplate` (JSON manifest URL template), `manifestField` (hash field name in manifest), `verifyChecksum` (boolean, default true), and `onNoChecksum` (\"warn\" | \"allow\" | \"abort\", default \"warn\").",
           "order": 0,
           "scope": "application"
         },
@@ -227,6 +227,13 @@
           "description": "Hours that cached SSH passphrases/passwords survive. 0 = never expire. On activate, if the cache file is older than this, it is wiped. Default 8 (one work session).",
           "order": 15
         },
+        "zygos.askpassKeyRotationDays": {
+          "type": "integer",
+          "default": 7,
+          "minimum": 0,
+          "description": "Days before the askpass cache master key rotates. On rotation, the cache is cleared and the user is re-prompted on next use. 0 = never rotate. Default 7.",
+          "order": 16
+        },
         "zygos.defaultExtensions": {
           "type": "array",
           "items": {
@@ -234,19 +241,19 @@
           },
           "default": [],
           "description": "Extension IDs to install on the remote SSH host when the server starts. Each ID is passed via --install-extension.",
-          "order": 16
+          "order": 17
         },
         "zygos.httpProxy": {
           "type": "string",
           "default": "",
           "description": "HTTP proxy URL to forward to the remote server (e.g. http://proxy.corp.com:3128). Empty = no proxy forwarding.",
-          "order": 17
+          "order": 18
         },
         "zygos.httpsProxy": {
           "type": "string",
           "default": "",
           "description": "HTTPS proxy URL to forward to the remote server. Empty = no proxy forwarding.",
-          "order": 18
+          "order": 19
         }
       }
     }
@@ -260,15 +267,16 @@
     "package": "node scripts/build-vsix.mjs"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.96.0",
     "@vitest/coverage-v8": "^4.1.8",
-    "@vscode/vsce": "^3.0.0",
-    "@eslint/js": "^9.0.0",
-    "eslint": "^9.0.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
+    "eslint": "^9.0.0",
     "fast-check": "^3.23.0",
     "knip": "^6.15.0",
+    "ovsx": "^0.10.12",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",
     "vitest": "^4.1.8"

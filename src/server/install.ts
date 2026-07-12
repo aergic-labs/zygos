@@ -26,6 +26,7 @@ import type { Logger } from "../common/logger";
 import type { PlatformAdapter, ProductInfo } from "../platform/types";
 import { buildServerDownloadUrl } from "./url";
 import { downloadToBuffer, type DownloadProgressFn } from "./download";
+import { fetchExpectedChecksum, verifyHash, computeHash } from "./checksum";
 import {
   bootstrapBusybox,
   bbExec,
@@ -195,6 +196,49 @@ async function installWithKnownHome(
   logger.info(`[install] downloading server from ${url}...`);
   const tarball = await downloadToBuffer(url, options?.onDownloadProgress);
   logger.info(`[install] downloaded ${tarball.length} bytes`);
+
+  // --- 5b. Verify checksum (client-side, before extraction) ---
+  if (productInfo.verifyChecksum) {
+    options?.onPhase?.("verifying-checksum");
+    const result = await fetchExpectedChecksum(
+      url,
+      productInfo,
+      os,
+      arch,
+      logger,
+    );
+
+    if ("expectedHash" in result) {
+      const ok = verifyHash(tarball, result.expectedHash, result.algo);
+      if (!ok) {
+        const actual = computeHash(tarball, result.algo);
+        throw new Error(
+          `Server tarball checksum mismatch (${result.source}, ${result.algo}).\n` +
+            `Expected: ${result.expectedHash}\n` +
+            `Actual:   ${actual}\n` +
+            `Aborting installation. Disable zygos.serverDownload.verifyChecksum to bypass.`,
+        );
+      }
+      logger.info(`[install] checksum verified (${result.algo}, ${result.source})`);
+    } else {
+      // No checksum source available
+      const policy = productInfo.onNoChecksum;
+      if (policy === "abort") {
+        throw new Error(
+          `Server tarball checksum not available (${result.reason}) and ` +
+            `zygos.serverDownload.onNoChecksum is set to "abort".`,
+        );
+      }
+      if (policy === "warn") {
+        logger.info(
+          `[install] warning: no checksum available (${result.reason}), proceeding with HTTPS-only protection`,
+        );
+      }
+      // "allow": proceed silently
+    }
+  } else {
+    logger.info(`[install] checksum verification disabled by setting`);
+  }
 
   // --- 6. Extract (stream over stdin via busybox sh) ---
   options?.onPhase?.("extracting");

@@ -50,6 +50,22 @@ export interface PlatformAdapter {
   getConflictingSshExtensionIds?(): string[];
 
   /**
+   * Checksum configuration for the detected fork. Returns undefined if
+   * the fork provides no checksum source (Antigravity, Kiro).
+   *
+   * - `checksumAlgo`: if set, sidecar URL is derived as
+   *   `resolvedDownloadUrl + "." + algo`.
+   * - `manifestTemplate`: full URL template for a JSON manifest.
+   * - `manifestField`: field name in the manifest JSON.
+   */
+  getChecksumConfig?(): {
+    checksumMethod?: "sidecar" | "manifest";
+    checksumAlgo?: "sha256" | "md5";
+    manifestTemplate?: string;
+    manifestField?: string;
+  };
+
+  /**
    * Candidate client data folder names to probe for argv.json.
    * Defaults to `[dataFolderName]`. VSCodium overrides this because
    * different builds use `.vscodium` / `.code-oss` / `.vscode`.
@@ -97,5 +113,21 @@ export interface ProductInfo {
    * If set, takes precedence over the adapter's getServerDownloadUrl().
    * Sourced from `zygos.serverDownload.template` when mode="custom".
    */
-  serverDownloadUrlTemplate?: string;
+  serverDownloadUrlTemplate?: string
+  /** Which checksum method to use. */
+  checksumMethod?: "sidecar" | "manifest"
+  /** Checksum algorithm for sidecar verification. If set, sidecar URL
+   * is `resolvedDownloadUrl + "." + algo`. */
+  checksumAlgo?: "sha256" | "md5"
+  /** Full URL template for a JSON manifest. Uses the same variables as
+   * the download URL template. */
+  manifestTemplate?: string
+  /** Field name in the manifest JSON containing the hash. */
+  manifestField?: string
+  /** Whether to verify checksums. Default true. */
+  verifyChecksum: boolean
+  /** Policy when no checksum source is available:
+   * "warn" (proceed with warning), "allow" (proceed silently),
+   * "abort" (block installation). Default "warn". */
+  onNoChecksum: "warn" | "allow" | "abort"
 }

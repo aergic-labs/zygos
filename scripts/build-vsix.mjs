@@ -279,12 +279,26 @@ function mergeContributes(baseC, overC) {
  * Removes commands, activationEvents, and configuration properties by id/key.
  */
 function stripFromMerged(merged, strip) {
-  if (strip.commands && merged.contributes?.commands) {
-    const ids = new Set(strip.commands);
+  const strippedCommands = new Set(strip.commands ?? []);
+
+  if (strippedCommands.size > 0 && merged.contributes?.commands) {
     merged.contributes.commands = merged.contributes.commands.filter(
-      (c) => !ids.has(c.command),
+      (c) => !strippedCommands.has(c.command),
     );
   }
+
+  // Also strip menu entries that reference stripped commands.
+  if (strippedCommands.size > 0 && merged.contributes?.menus) {
+    for (const menuKey of Object.keys(merged.contributes.menus)) {
+      const entries = merged.contributes.menus[menuKey];
+      if (Array.isArray(entries)) {
+        merged.contributes.menus[menuKey] = entries.filter(
+          (e) => !strippedCommands.has(e.command),
+        );
+      }
+    }
+  }
+
   if (strip.activationEvents && merged.activationEvents) {
     const events = new Set(strip.activationEvents);
     merged.activationEvents = merged.activationEvents.filter(

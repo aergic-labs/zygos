@@ -20,6 +20,8 @@ function makeProductInfo(overrides: Partial<ProductInfo> = {}): ProductInfo {
     release: "1.2.3",
     serverApplicationName: "codium-server",
     serverDataFolderName: ".vscodium-server",
+    verifyChecksum: false,
+    onNoChecksum: "warn",
     ...overrides,
   };
 }
