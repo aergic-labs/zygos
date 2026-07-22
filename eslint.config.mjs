@@ -15,6 +15,8 @@ const nodeGlobals = {
   clearInterval: "readonly",
   setImmediate: "readonly",
   queueMicrotask: "readonly",
+  fetch: "readonly",
+  AbortSignal: "readonly",
 };
 
 export default tseslint.config(

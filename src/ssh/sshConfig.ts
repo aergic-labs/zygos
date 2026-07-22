@@ -17,6 +17,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import * as vscode from "vscode";
 import SSHConfig, { LineType, type Directive } from "ssh-config";
 import { parseSshDestination, type SshDestination } from "./destination";
@@ -48,7 +49,6 @@ export function getConfigPath(): string {
 }
 
 async function fileExists(p: string): Promise<boolean> {
-  const fs = await import("node:fs/promises");
   try {
     await fs.access(p);
     return true;
@@ -58,7 +58,6 @@ async function fileExists(p: string): Promise<boolean> {
 }
 
 async function readConfigFile(filePath: string): Promise<SSHConfig> {
-  const fs = await import("node:fs/promises");
   let content = "";
   if (await fileExists(filePath)) {
     content = (await fs.readFile(filePath, "utf-8")).trim();

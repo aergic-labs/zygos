@@ -5,7 +5,7 @@
 
 // Build-time flag selects which fork templates ship. The Kiro build
 // includes only the Kiro template + Custom; the VSCodium build includes
-// all forks except Kiro.
+// all forks except Kiro (Kiro URLs are useless in a VSCodium build).
 declare const HAS_VSCODIUM_ADAPTER: boolean;
 
 /**
@@ -41,12 +41,12 @@ export interface ForkTemplate {
  * Fork templates for the config webview.
  *
  * VSCodium build: all forks except Kiro (Kiro URLs are useless in a
- * VSCodium build, and guard-bundle would reject the "kiro" string).
- * Kiro build: just Kiro + Custom.
+ * VSCodium build). Kiro build: just Kiro + Custom.
  *
  * Each fork keys its tarball off a different "version" source, probed from
  * the installed fork's CDN:
  *   VSCodium     -> ${version}            (product.json version)
+ *   VSCode-OSS   -> ${nearestVsCodiumVersion} (highest VSCodium release <= local)
  *   Trae         -> ${cdnVersion}         (fetched from a CDN version file)
  *   Devin        -> ${windsurfVersion}    (product.json windsurfVersion)
  *   Antigravity  -> ${ideVersion}         (product.json ideVersion)
@@ -59,6 +59,14 @@ export const FORK_TEMPLATES: ForkTemplate[] = HAS_VSCODIUM_ADAPTER
         name: "VSCodium",
         template:
           "https://github.com/VSCodium/vscodium/releases/download/${version}/vscodium-reh-${os}-${arch}-${version}.tar.gz",
+        checksumMethod: "sidecar",
+        checksumAlgo: "sha256",
+      },
+      {
+        id: "vscode-oss",
+        name: "VSCode-OSS",
+        template:
+          "https://github.com/VSCodium/vscodium/releases/download/${nearestVsCodiumVersion}/vscodium-reh-${os}-${arch}-${nearestVsCodiumVersion}.tar.gz",
         checksumMethod: "sidecar",
         checksumAlgo: "sha256",
       },

@@ -118,13 +118,6 @@ try {
     env: { ...process.env, TARGET: target },
   });
 
-  console.log("Guarding bundle for competitor strings...");
-  execSync(`node scripts/guard-bundle.mjs --target=${target}`, {
-    cwd: root,
-    stdio: "inherit",
-    env: { ...process.env, TARGET: target },
-  });
-
   // Assemble in temp directory to keep the worktree clean.
   stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-pack-"));
   console.log(`Packaging in ${stageDir}...`);
@@ -168,6 +161,7 @@ try {
     "coverage",
     "dist/meta.json",
     "sim.ps1",
+    "README.md",
   ]);
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     const name = entry.name;

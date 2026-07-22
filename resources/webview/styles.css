@@ -109,7 +109,7 @@ table.vars td.value {
   padding: 8px 0;
 }
 
-.test-result {
+.status {
   margin: 8px 0;
   padding: 8px 12px;
   border-radius: 3px;
@@ -117,12 +117,12 @@ table.vars td.value {
   display: none;
   white-space: pre-wrap;
 }
-.test-result.visible { display: block; }
-.test-result.ok {
+.status.visible { display: block; }
+.status.ok {
   background: rgba(100, 200, 100, 0.1);
   border: 1px solid rgba(100, 200, 100, 0.3);
 }
-.test-result.err {
+.status.err {
   background: rgba(220, 80, 80, 0.1);
   border: 1px solid rgba(220, 80, 80, 0.3);
 }
@@ -147,6 +147,8 @@ button.secondary:hover {
 }
 button:disabled { opacity: 0.5; cursor: default; }
 .button-row { display: flex; gap: 8px; margin-top: 12px; }
+.defaults-row { display: flex; gap: 8px; align-items: center; }
+.defaults-row select { flex: 1; }
 
 h2 {
   font-size: 1.15em;

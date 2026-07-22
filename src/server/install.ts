@@ -252,6 +252,24 @@ async function installWithKnownHome(
     );
   }
 
+  // --- 6b. Patch the extracted product.json commit to match the IDE. ---
+  // VS Code's client/server commit check fails when the tarball's commit
+  // differs from the IDE's (always the case for vscode-oss using VSCodium
+  // tarballs, and for any cross-fork custom download). The install dir is
+  // already named after the IDE commit, so only the tarball's product.json
+  // needs aligning. No-op when the commits already match.
+  const productJsonPath = `${installPath}/product.json`;
+  const sedCmd =
+    `sed -i 's/"commit": "[0-9a-f]*"/"commit": "${productInfo.commit}"/' ` +
+    shellQuote(productJsonPath);
+  logger.info(`[install] patching commit in ${productJsonPath}...`);
+  const patchResult = await bbExec(conn, home, sedCmd);
+  if (patchResult.exitCode !== 0) {
+    throw new Error(
+      `Commit patch failed (exit ${patchResult.exitCode}): ${patchResult.stderr || patchResult.stdout}`,
+    );
+  }
+
   // --- 7. Verify (via busybox) ---
   options?.onPhase?.("verifying");
   logger.info(`[install] verifying...`);

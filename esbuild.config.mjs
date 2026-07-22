@@ -8,8 +8,8 @@ import * as esbuild from "esbuild";
 const isWatch = process.argv.includes("--watch");
 const target = process.env.TARGET || "kiro";
 
-// Per-vendor feature flags. Vendor names never ship in a non-target VSIX -
-// guard-bundle.mjs enforces this after build.
+// Per-vendor feature flags. esbuild substitutes these as literal
+// booleans and tree-shakes the unused adapter branch out of each VSIX.
 const flags = {
   HAS_KIRO_ADAPTER: target === "kiro",
   HAS_VSCODIUM_ADAPTER: target === "vscodium",

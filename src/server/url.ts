@@ -20,6 +20,7 @@
  */
 
 import type { PlatformAdapter, ProductInfo } from "../platform/types";
+import { resolveNearestVsCodiumVersion } from "./vscodiumFeed";
 
 /**
  * Substitute the synchronous template variables. Leaves async placeholders
@@ -80,8 +81,8 @@ export async function fetchCdnVersion(partialUrl: string): Promise<string> {
 
 /**
  * Resolve a template to a concrete URL: sync substitution first, then an
- * async fetch for ${cdnVersion} if present. Returns the resolved URL and any
- * placeholders that remain unresolved.
+ * async fetch for ${cdnVersion} or ${nearestVsCodiumVersion} if present.
+ * Returns the resolved URL and any placeholders that remain unresolved.
  */
 export async function resolveTemplateUrl(
   template: string,
@@ -92,7 +93,11 @@ export async function resolveTemplateUrl(
   let url = substituteTemplate(template, info, os, arch);
   if (url.includes("${cdnVersion}")) {
     const cdnVersion = await fetchCdnVersion(url);
-    url = url.replace(/\$\{cdnVersion\}/g, cdnVersion);
+    url = url.replaceAll("${cdnVersion}", cdnVersion);
+  }
+  if (url.includes("${nearestVsCodiumVersion}")) {
+    const nearest = await resolveNearestVsCodiumVersion(info.version);
+    url = url.replaceAll("${nearestVsCodiumVersion}", nearest);
   }
   const unresolved = url.match(/\$\{[^}]+\}/g) ?? [];
   return { url, unresolved };

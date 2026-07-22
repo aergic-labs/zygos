@@ -6,12 +6,11 @@
 import * as vscode from "vscode";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import { detectPlatform, getProductInfo } from "../platform";
+import { detectPlatform, getProductInfo, readProductJson } from "../platform";
 import { buildServerDownloadUrl, resolveTemplateUrl } from "../server/url";
 import { FORK_TEMPLATES } from "../platform/forkTemplates";
+import { resolveNearestVsCodiumVersion } from "../server/vscodiumFeed";
 import type { Logger } from "../common/logger";
-
-declare const HAS_VSCODIUM_ADAPTER: boolean;
 
 /** Read the webview HTML and substitute the script/style webview URIs
  * plus a per-panel nonce for CSP. */
@@ -97,7 +96,6 @@ interface VariableValue {
 
 interface PanelState {
   forkName: string;
-  hasCustomTab: boolean;
   downloadMode: string;
   currentTemplate: string | undefined;
   resolvedUrl: string | undefined;
@@ -105,6 +103,7 @@ interface PanelState {
   forkTemplates: typeof FORK_TEMPLATES;
   variables: VariableValue[];
   cdnVersionAsync: boolean;
+  nearestVsCodiumVersionAsync: boolean;
   checksumMethod: string;
   checksumAlgo: string;
   manifestTemplate: string;
@@ -114,11 +113,11 @@ interface PanelState {
 }
 
 /** Build the variable table: only non-empty values are included. */
-function buildVariables(
+async function buildVariables(
   info: ReturnType<typeof getProductInfo>,
   os: string,
   arch: string,
-): VariableValue[] {
+): Promise<VariableValue[]> {
   const entries: { name: string; value: string | undefined }[] = [
     { name: "commit", value: info.commit },
     { name: "quality", value: info.quality },
@@ -131,6 +130,24 @@ function buildVariables(
     { name: "arch", value: arch },
     { name: "platform", value: arch },
   ];
+  // ${nearestVsCodiumVersion} only makes sense for the vscode-oss fork.
+  // Other forks either ship their own reh tarballs or use a different
+  // version source (windsurfVersion, ideVersion, etc.).
+  let appName = "";
+  try {
+    appName = String(readProductJson().applicationName ?? "");
+  } catch {
+    // ignore - empty name means the variable stays hidden
+  }
+  if (appName === "code-oss") {
+    let nearest: string | undefined;
+    try {
+      nearest = await resolveNearestVsCodiumVersion(info.version);
+    } catch {
+      // leave undefined - hidden from the table
+    }
+    entries.push({ name: "nearestVsCodiumVersion", value: nearest });
+  }
   return entries
     .filter((e) => e.value && e.value.length > 0)
     .map((e) => ({ name: e.name, value: e.value as string }));
@@ -149,8 +166,13 @@ async function sendState(
   const sd = config.get<Record<string, string>>("serverDownload", {});
   const downloadMode = sd.mode || "auto";
   const binaryName = typeof sd.binaryName === "string" ? sd.binaryName : "";
+  // Saved template: only present in custom mode. Auto mode clears it so
+  // switching back to custom starts fresh from detected-fork defaults.
+  const savedTemplate = typeof sd.template === "string" && sd.template.trim()
+    ? sd.template.trim()
+    : undefined;
 
-  logger.info(`[configPanel] sendState isFirst=${isFirst} downloadMode=${downloadMode} currentTemplate=${JSON.stringify(info.serverDownloadUrlTemplate?.slice(0, 80))} binaryName=${JSON.stringify(binaryName)}`);
+  logger.info(`[configPanel] sendState isFirst=${isFirst} downloadMode=${downloadMode} currentTemplate=${JSON.stringify(savedTemplate?.slice(0, 80))} binaryName=${JSON.stringify(binaryName)}`);
 
   let resolvedUrl: string | undefined;
   try {
@@ -162,14 +184,14 @@ async function sendState(
 
   const state: PanelState = {
     forkName: platform.name,
-    hasCustomTab: HAS_VSCODIUM_ADAPTER,
     downloadMode,
-    currentTemplate: info.serverDownloadUrlTemplate,
+    currentTemplate: savedTemplate,
     resolvedUrl,
     binaryName,
     forkTemplates: FORK_TEMPLATES,
-    variables: buildVariables(info, os, arch),
+    variables: await buildVariables(info, os, arch),
     cdnVersionAsync: false,
+    nearestVsCodiumVersionAsync: false,
     checksumMethod: info.checksumMethod ?? "sidecar",
     checksumAlgo: info.checksumAlgo ?? "",
     manifestTemplate: info.manifestTemplate ?? "",
@@ -214,11 +236,15 @@ async function handleResolveUrl(
       arch,
     );
     const cdnVersionAsync = template.includes("${cdnVersion}");
+    const nearestVsCodiumVersionAsync = template.includes(
+      "${nearestVsCodiumVersion}",
+    );
     await panel.webview.postMessage({
       type: "resolvedUrl",
       url,
       unresolved,
       cdnVersionAsync,
+      nearestVsCodiumVersionAsync,
     });
   } catch (err) {
     logger.error(`[configPanel] template resolve failed: ${err}`);
@@ -410,9 +436,8 @@ async function writeSettingsDirect(msg: ApplyMsg, logger: Logger): Promise<void>
   const config = vscode.workspace.getConfiguration("zygos");
   const modeVal = msg.mode || "auto";
 
-  // In auto mode, discard the template. Only custom mode uses it.
-  // This prevents stale templates from lingering in settings after
-  // switching back to auto.
+  // Custom mode saves the template; auto mode discards it so switching
+  // back to custom starts fresh from detected-fork defaults.
   const templateVal = modeVal === "custom" ? msg.template.trim() : "";
   const binaryVal = msg.binaryName.trim();
 

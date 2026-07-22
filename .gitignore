@@ -37,3 +37,6 @@ nul
 # Backups
 *.bak
 package.json.bak
+
+# Local scripts
+scripts/clean-remote.sh

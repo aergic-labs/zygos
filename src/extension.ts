@@ -5,6 +5,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as vscode from "vscode";
 import { detectPlatform } from "./platform";
 import { Logger } from "./common/logger";
@@ -14,6 +15,7 @@ import { registerHostCommands } from "./host";
 import { registerResolver } from "./resolver";
 import { registerConfigPanel } from "./webview/configPanel";
 import { initCache, disposeCache } from "./ssh/askpassCache";
+import { initVscodiumFeed } from "./server/vscodiumFeed";
 
 // Build-time flag determines the published extension name.
 declare const HAS_KIRO_ADAPTER: boolean;
@@ -110,6 +112,13 @@ export async function activate(
     ttlHours,
     rotationDays,
   );
+
+  // Initialize the VSCodium release feed used by the vscode-oss fork.
+  // Bundled list ships in the VSIX; per-user cache is append-only.
+  initVscodiumFeed({
+    bundledPath: path.join(context.extensionPath, "tools", "vscodium", "versions.json"),
+    cachePath: path.join(os.homedir(), ".zygos", "vscodium-versions.json"),
+  });
 
   // Register the authority resolver.
   try {

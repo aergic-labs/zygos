@@ -127,7 +127,7 @@ export async function fetchExpectedChecksum(
         const hash = await fetchManifestChecksum(url, info.manifestField);
         if (hash) {
           const algo = info.checksumAlgo ?? "sha256";
-          logger.info(`[checksum] manifest ${algo}=${hash.slice(0, 16)}...`);
+          logger.info(`[checksum] manifest ${algo}=${hash}`);
           return { expectedHash: hash, algo, source: "manifest" };
         }
         logger.info(`[checksum] manifest not available (404/403)`);
@@ -141,7 +141,7 @@ export async function fetchExpectedChecksum(
       try {
         const hash = await fetchSidecarChecksum(downloadUrl, info.checksumAlgo);
         if (hash) {
-          logger.info(`[checksum] sidecar ${info.checksumAlgo}=${hash.slice(0, 16)}...`);
+          logger.info(`[checksum] sidecar ${info.checksumAlgo}=${hash}`);
           return { expectedHash: hash, algo: info.checksumAlgo, source: "sidecar" };
         }
         logger.info(`[checksum] sidecar not available (404/403)`);

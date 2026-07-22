@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ensureServerInstalled } from "../../src/server/install";
 import {
   FakeSshConnection,
@@ -12,6 +12,13 @@ import {
   noopLogger,
 } from "../__mocks__/fakeSshConnection";
 import type { PlatformAdapter, ProductInfo } from "../../src/platform/types";
+
+// Mock downloadToBuffer so the install flow can reach extraction + patching
+// without a real HTTP server. Returns an empty buffer; the fake ssh conn
+// returns success for tar extraction regardless of stdin contents.
+vi.mock("../../src/server/download", () => ({
+  downloadToBuffer: async () => Buffer.alloc(0),
+}));
 
 function makeAdapter(): PlatformAdapter {
   return {
@@ -84,7 +91,7 @@ describe("ensureServerInstalled", () => {
     expect(result.arch).toBe("arm64");
   });
 
-  it("returns alreadyInstalled=false when server needs install", async () => {
+  it("completes the install when server needs install", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
     conn.setResponse("uname", ok("x86_64\nBB_YES"));
@@ -92,17 +99,20 @@ describe("ensureServerInstalled", () => {
     conn.setResponse("test -f", ok("NEEDS_INSTALL"));
     conn.setDefault(ok());
 
-    // Download fails (no real HTTP server); verify it throws, not crashes.
-    await expect(
-      ensureServerInstalled(
-        conn as any,
-        makeAdapter(),
-        makeProductInfo(),
-        noopLogger as any,
-        "/ext/path",
-        "/home/user",
-      ),
-    ).rejects.toThrow(); // download fails
+    // downloadToBuffer is mocked to return an empty buffer; the fake ssh
+    // conn returns success for tar extraction, sed commit patch, and the
+    // final node-binary check.
+    const result = await ensureServerInstalled(
+      conn as any,
+      makeAdapter(),
+      makeProductInfo(),
+      noopLogger as any,
+      "/ext/path",
+      "/home/user",
+    );
+
+    expect(result.alreadyInstalled).toBe(false);
+    expect(result.installPath).toBe("/home/user/.test-server/bin/abc123");
   });
 
   it("throws when arch is unsupported", async () => {
@@ -121,5 +131,38 @@ describe("ensureServerInstalled", () => {
         "/home/user",
       ),
     ).rejects.toThrow("Unsupported");
+  });
+
+  it("patches the extracted product.json commit to match the IDE", async () => {
+    const conn = new FakeSshConnection();
+    await conn.connect();
+    conn.setResponse("uname", ok("x86_64\nBB_YES"));
+    conn.setResponse("test -f", ok("NEEDS_INSTALL"));
+    // sed returns success; verify (test -f node) succeeds.
+    conn.setResponse("sed", ok(""));
+    conn.setResponse("node", ok(""));
+    conn.setDefault(ok());
+
+    const result = await ensureServerInstalled(
+      conn as any,
+      makeAdapter(),
+      makeProductInfo(),
+      noopLogger as any,
+      "/ext/path",
+      "/home/user",
+    );
+
+    expect(result.alreadyInstalled).toBe(false);
+    expect(result.installPath).toBe("/home/user/.test-server/bin/abc123");
+
+    // The sed command must target <installPath>/product.json and substitute
+    // the IDE commit. Match by substring on the captured calls.
+    const sedCall = conn.calls.find(
+      (c) => c.includes("sed") && c.includes("product.json"),
+    );
+    expect(sedCall).toBeDefined();
+    expect(sedCall!).toContain("'/home/user/.test-server/bin/abc123/product.json'");
+    expect(sedCall!).toContain('"commit": "abc123"');
+    expect(sedCall!).toMatch(/"commit": "[0-9a-f]*"/);
   });
 });

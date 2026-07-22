@@ -11,7 +11,16 @@ import * as os from "node:os";
 import { KiroAdapter } from "../../src/platform/kiro";
 import { VscodiumAdapter } from "../../src/platform/vscodium";
 import { getProductInfo, readProductJson } from "../../src/platform/index";
+import { initVscodiumFeed } from "../../src/server/vscodiumFeed";
 import { setConfig, resetConfig, env as vscodeEnv } from "../__mocks__/vscode";
+
+// Substitute the feed module so the lazy `require()` inside the
+// VscodiumAdapter vscode-oss branch resolves under vitest.
+const feedMock = vi.fn<(v: string) => Promise<string>>();
+vi.mock("../../src/server/vscodiumFeed", () => ({
+  initVscodiumFeed: () => {},
+  resolveNearestVsCodiumVersion: (v: string) => feedMock(v),
+}));
 
 // --- Helpers ---
 
@@ -295,6 +304,91 @@ describe("VscodiumAdapter", () => {
     } finally {
       fetchMock.mockRestore();
     }
+  });
+});
+
+// --- VscodiumAdapter: vscode-oss fork ---
+
+describe("VscodiumAdapter (vscode-oss)", () => {
+  let adapter: VscodiumAdapter;
+  let feedTmp: string;
+  let bundledPath: string;
+  let cachePath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-test-"));
+    (vscodeEnv as any).appRoot = tmpDir;
+    feedTmp = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-feed-"));
+    bundledPath = path.join(feedTmp, "bundled.json");
+    cachePath = path.join(feedTmp, "cache.json");
+    initVscodiumFeed({ bundledPath, cachePath });
+    adapter = new VscodiumAdapter();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(feedTmp, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    resetConfig();
+  });
+
+  it("detects code-oss as VSCode-OSS (not VSCodium)", () => {
+    writeProductJson({ applicationName: "code-oss", version: "1.124.0" });
+    const a = new VscodiumAdapter();
+    expect(a.name).toBe("VSCode-OSS");
+    expect(a.serverDataFolderName).toBe(".vscode-server-oss");
+    expect(a.serverApplicationName).toBe("code-server-oss");
+  });
+
+  it("real vscodium (applicationName=codium) is not VSCode-OSS", () => {
+    writeProductJson({ applicationName: "codium", version: "1.126.04524" });
+    const a = new VscodiumAdapter();
+    expect(a.name).toBe("VSCodium");
+  });
+
+  it("getServerDownloadUrl uses the nearest VSCodium release", async () => {
+    writeProductJson({
+      applicationName: "code-oss",
+      version: "1.124.0",
+      commit: "feedface",
+    });
+    feedMock.mockResolvedValue("1.121.03429");
+    const a = new VscodiumAdapter();
+    const url = await a.getServerDownloadUrl(
+      "feedface",
+      "stable",
+      "linux",
+      "x64",
+    );
+    expect(url).toBe(
+      "https://github.com/VSCodium/vscodium/releases/download/1.121.03429/vscodium-reh-linux-x64-1.121.03429.tar.gz",
+    );
+  });
+
+  it("getServerDownloadUrl falls back to 0.0.0 when no match resolves", async () => {
+    writeProductJson({
+      applicationName: "code-oss",
+      version: "1.124.0",
+      commit: "feedface",
+    });
+    feedMock.mockResolvedValue("");
+    const a = new VscodiumAdapter();
+    const url = await a.getServerDownloadUrl(
+      "feedface",
+      "stable",
+      "linux",
+      "x64",
+    );
+    expect(url).toContain("0.0.0");
+  });
+
+  it("getChecksumConfig returns sidecar sha256 like VSCodium", () => {
+    writeProductJson({ applicationName: "code-oss", version: "1.124.0" });
+    const a = new VscodiumAdapter();
+    expect(a.getChecksumConfig!()).toEqual({
+      checksumMethod: "sidecar",
+      checksumAlgo: "sha256",
+    });
   });
 });
 

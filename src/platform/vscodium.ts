@@ -6,6 +6,7 @@
 import * as vscode from "vscode";
 import type { PlatformAdapter } from "./types";
 import { readProductJson } from "./index";
+import { resolveNearestVsCodiumVersion } from "../server/vscodiumFeed";
 
 const VSCODIUM_GITHUB_BASE =
   "https://github.com/VSCodium/vscodium/releases/download";
@@ -81,10 +82,27 @@ const QODER_CONFIG: ForkConfig = {
   needsArgvPatch: true,
 };
 
+// vscode-oss (microsoft/vscode OSS build) ships no reh tarballs. Use
+// VSCodium's reh tarballs at the highest release <= the local version.
+// Commit patching after extraction aligns the tarball's product.json with
+// the IDE's commit so the client/server commit check passes.
+const VSCODE_OSS_CONFIG: ForkConfig = {
+  name: "VSCode-OSS",
+  dataFolderName: ".vscode-oss",
+  serverDataFolderName: ".vscode-server-oss",
+  serverApplicationName: "code-server-oss",
+  argvDataFolderNames: [".vscode-oss", ".code-oss", ".vscode"],
+  remoteExtensionsDirs: [".vscode-server-oss/extensions"],
+  needsArgvPatch: true,
+};
+
 function detectFork(): ForkConfig {
   try {
     const product = readProductJson();
     const name = String(product.applicationName ?? "").toLowerCase();
+    // Exact match only - "code-oss" is the OSS build's applicationName.
+    // Real VSCodium uses "codium" and must hit the VSCODIUM_CONFIG branch.
+    if (name === "code-oss") return VSCODE_OSS_CONFIG;
     if (name.includes("trae") || name.includes("byte")) return TRAE_CONFIG;
     if (name.includes("devin") || name.includes("windsurf"))
       return DEVIN_CONFIG;
@@ -199,6 +217,8 @@ export class VscodiumAdapter implements PlatformAdapter {
         return this.antigravityDownloadUrl(commit, quality, os, arch);
       case QODER_CONFIG:
         return this.qoderDownloadUrl(commit, os, arch);
+      case VSCODE_OSS_CONFIG:
+        return this.vscodeOssDownloadUrl(os, arch);
       default:
         return this.vscodiumDownloadUrl(os, arch);
     }
@@ -207,6 +227,16 @@ export class VscodiumAdapter implements PlatformAdapter {
   private vscodiumDownloadUrl(os: string, arch: string): string {
     const version = this.readVersion() || "0.0.0";
     return `${VSCODIUM_GITHUB_BASE}/${version}/vscodium-reh-${os}-${arch}-${version}.tar.gz`;
+  }
+
+  // vscode-oss: map the local major.minor.patch to the highest VSCodium
+  // release <= local, then use VSCodium's reh tarball. Returns "0.0.0" on
+  // any failure to match the VSCodium fallback convention.
+  private async vscodeOssDownloadUrl(os: string, arch: string): Promise<string> {
+    const localVersion = this.readVersion() || "0.0.0";
+    const nearest = await resolveNearestVsCodiumVersion(localVersion);
+    const v = nearest || "0.0.0";
+    return `${VSCODIUM_GITHUB_BASE}/${v}/vscodium-reh-${os}-${arch}-${v}.tar.gz`;
   }
 
   private async traeDownloadUrl(commit: string, arch: string): Promise<string> {
@@ -324,6 +354,7 @@ export class VscodiumAdapter implements PlatformAdapter {
   } {
     switch (this.fork) {
       case VSCODIUM_CONFIG:
+      case VSCODE_OSS_CONFIG:
         return { checksumMethod: "sidecar", checksumAlgo: "sha256" };
       case TRAE_CONFIG:
         return { checksumMethod: "sidecar", checksumAlgo: "md5" };

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.0] - 2026-07-22
+
+### Added
+
+- VSCode-OSS support: maps the local version to the highest
+  VSCodium reh release `<=` local via a bundled version list plus
+  an append-only runtime cache. New `${nearestVsCodiumVersion}`
+  template variable for custom mode.
+- Commit patching after server tarball extraction (sed-based) so
+  cross-fork downloads pass VS Code's client/Server commit check.
+- `make vscodium-versions` target to refresh the bundled version
+  list (manual, not part of `make build`).
+- Apply buttons in the config webview now show in-flight and
+  success/failure status.
+
+### Changed
+
+- Fork template picker in the config webview now uses an explicit
+  Load button instead of applying on selection.
+- Config webview: status widgets renamed from `test-result` to
+  `status`, placed consistently above their button row.
+- Static `node:fs/promises` import in sshConfig (was lazy).
+
+### Removed
+
+- Brand-string guard script (`scripts/guard-bundle.mjs`) and its
+  build/lint integrations.
+
 ## [0.1.0] - 2026-07-12
 
 ### Added

@@ -30,7 +30,7 @@ document.addEventListener("click", (e) => {
       break;
     case "switch-mode": {
       const newMode = state?.downloadMode === "custom" ? "auto" : "custom";
-      sendApply(newMode);
+      sendApply(newMode, "mode-switch");
       break;
     }
     case "apply":
@@ -42,22 +42,20 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// --- fork select: pre-fill the template ---
-$("forkSelect").addEventListener("change", () => {
-  const fork = state?.forkTemplates?.find(
-    (f) => f.id === $("forkSelect").value,
-  );
-  if (fork) {
-    $("templateInput").value = fork.template;
-    $("checksumMethodSelect").value = fork.checksumMethod ?? "sidecar";
-    $("checksumAlgoSelect").value = fork.checksumAlgo ?? "";
-    $("manifestTemplateInput").value = fork.manifestTemplate ?? "";
-    $("manifestFieldInput").value = fork.manifestField ?? "";
-    updateChecksumMethod();
-
-    updatePreview();
-    renderVars();
-  }
+// --- fork defaults: load button ---
+$("loadDefaultsBtn").addEventListener("click", () => {
+  const forkId = $("forkDefaultsSelect").value;
+  const fork = state?.forkTemplates?.find((f) => f.id === forkId);
+  if (!fork) return;
+  if (fork.template) $("templateInput").value = fork.template;
+  $("checksumMethodSelect").value = fork.checksumMethod ?? "sidecar";
+  $("checksumAlgoSelect").value = fork.checksumAlgo ?? "";
+  $("manifestTemplateInput").value = fork.manifestTemplate ?? "";
+  $("manifestFieldInput").value = fork.manifestField ?? "";
+  updateChecksumMethod();
+  updatePreview();
+  renderVars();
+  showStatus("custom", true, "Loaded defaults from " + fork.name + ".");
 });
 
 // --- template input: live preview ---
@@ -91,6 +89,12 @@ function updateChecksumMethod() {
 }
 
 function sendApply(mode, which) {
+  const btn = which && $(which + "ApplyBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.label = btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span>Saving...';
+  }
   vscode.postMessage({
     type: "apply",
     template: $("templateInput").value,
@@ -145,8 +149,8 @@ function updateSidecarUrl() {
   const algo = $("checksumAlgoSelect").value;
   const btnRow = $("sidecarBtnRow");
   const urlBox = $("sidecarUrl");
-  const resultEl = $("sidecarTestResult");
-  resultEl.className = "test-result";
+  const resultEl = $("sidecarStatus");
+  resultEl.className = "status";
   resultEl.textContent = "";
 
   if (!algo) {
@@ -182,8 +186,8 @@ function updateManifestUrl() {
   const template = $("manifestTemplateInput").value.trim();
   const btnRow = $("manifestBtnRow");
   const urlBox = $("manifestUrl");
-  const resultEl = $("manifestTestResult");
-  resultEl.className = "test-result";
+  const resultEl = $("manifestStatus");
+  resultEl.className = "status";
   resultEl.textContent = "";
 
   if (!template) {
@@ -207,7 +211,7 @@ function runTest(which, url) {
     url === "(empty)" ||
     url.includes("${")
   ) {
-    showTestResult(
+    showStatus(
       which,
       false,
       "No valid URL to test. Resolve the template first.",
@@ -222,10 +226,19 @@ function runTest(which, url) {
   vscode.postMessage({ type: "testUrl", url, which });
 }
 
-function showTestResult(which, ok, msg) {
-  const el = $(which + "TestResult");
-  el.className = "test-result visible " + (ok ? "ok" : "err");
+function showStatus(which, ok, msg) {
+  const el = $(which + "Status");
+  el.className = "status visible " + (ok ? "ok" : "err");
   el.textContent = msg;
+}
+
+function restoreApplyBtn(which) {
+  const btn = $(which + "ApplyBtn");
+  if (btn && btn.dataset.label) {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.label;
+    delete btn.dataset.label;
+  }
 }
 
 function renderVars() {
@@ -267,9 +280,14 @@ window.addEventListener("message", (e) => {
         $("binaryNameInput").value = state.binaryName;
       }
 
-      // Populate fork select
-      const sel = $("forkSelect");
+      // Populate fork defaults picker (does not reflect saved state - it's
+      // just a source to load defaults from on button click).
+      const sel = $("forkDefaultsSelect");
       sel.innerHTML = "";
+      const blankOpt = document.createElement("option");
+      blankOpt.value = "";
+      blankOpt.textContent = "(pick a fork)";
+      sel.appendChild(blankOpt);
       for (const f of state.forkTemplates) {
         const opt = document.createElement("option");
         opt.value = f.id;
@@ -277,12 +295,24 @@ window.addEventListener("message", (e) => {
         sel.appendChild(opt);
       }
 
-      if (state.downloadMode === "custom" && state.currentTemplate) {
+      if (state.currentTemplate) {
+        // Previously saved (custom mode only). Restore as-is; don't
+        // auto-load defaults over the user's saved choice.
         $("templateInput").value = state.currentTemplate;
       } else {
-        const firstFork = state.forkTemplates?.[0];
-        if (firstFork && firstFork.template) {
-          $("templateInput").value = firstFork.template;
+        // Nothing saved yet: auto-load defaults from the detected fork so
+        // the UI starts from sane defaults. Trae has regional variants
+        // ("Trae (US)" etc), so match by prefix.
+        const match = state.forkTemplates?.find(
+          (f) => f.name === state.forkName || f.name.startsWith(state.forkName + " "),
+        );
+        const fallback = match ?? state.forkTemplates?.[0];
+        if (fallback && fallback.template) {
+          $("templateInput").value = fallback.template;
+          $("checksumMethodSelect").value = fallback.checksumMethod ?? "sidecar";
+          $("checksumAlgoSelect").value = fallback.checksumAlgo ?? "";
+          $("manifestTemplateInput").value = fallback.manifestTemplate ?? "";
+          $("manifestFieldInput").value = fallback.manifestField ?? "";
         }
       }
 
@@ -361,36 +391,38 @@ window.addEventListener("message", (e) => {
         }
         if (r.contentType) text += " [" + r.contentType + "]";
         if (r.error) text += "\n" + r.error;
-        showTestResult(which, true, text);
+        showStatus(which, true, text);
       } else {
         let text = r.error || "HTTP " + r.status + " " + (r.statusText || "");
         if (r.contentType) text += " [content-type: " + r.contentType + "]";
-        showTestResult(which, false, text);
+        showStatus(which, false, text);
       }
       break;
     }
 
     case "applied": {
       const which = msg.which || "custom";
-      const isModeSwitch = msg.which === "auto" || msg.which === "custom";
-      if (isModeSwitch) {
-        showTestResult(
-          which === "auto" ? "auto" : "custom",
+      if (which === "mode-switch") {
+        const newMode = state?.downloadMode === "custom" ? "auto" : "custom";
+        showStatus(
+          newMode === "auto" ? "auto" : "custom",
           true,
-          which === "auto" ? "Switched to auto." : "Switched to custom.",
+          newMode === "auto" ? "Switched to auto." : "Switched to custom.",
         );
       } else if (which === "checksum") {
-        showTestResult("sidecar", true, "Checksum settings saved.");
+        showStatus("checksum", true, "Checksum settings saved.");
       } else {
-        showTestResult("custom", true, "Settings saved.");
+        showStatus("custom", true, "Settings saved.");
       }
+      restoreApplyBtn(which);
       vscode.postMessage({ type: "getState" });
       break;
     }
 
     case "applyError": {
       const which = msg.which || "custom";
-      showTestResult(which, false, "Save failed: " + msg.error);
+      showStatus(which, false, "Save failed: " + msg.error);
+      restoreApplyBtn(which);
       break;
     }
   }

@@ -39,7 +39,7 @@
             <div class="row">
                 <label>Resolved URL</label>
                 <div class="url-box empty" id="autoUrl">Resolving...</div>
-                <div class="test-result" id="autoTestResult"></div>
+                <div class="status" id="autoStatus"></div>
                 <div class="button-row">
                     <button
                         class="secondary"
@@ -55,10 +55,15 @@
         <!-- Custom section (editor) -->
         <div class="section" id="customSection">
             <div class="row" id="forkSelectRow">
-                <label for="forkSelect">Fork template</label>
-                <select id="forkSelect"></select>
+                <label>Load defaults from</label>
+                <div class="defaults-row">
+                    <select id="forkDefaultsSelect">
+                        <option value="">(pick a fork)</option>
+                    </select>
+                    <button data-action="load-defaults" id="loadDefaultsBtn">Load</button>
+                </div>
                 <div class="desc">
-                    Pick a fork to pre-fill the template, or choose Custom.
+                    Pick a fork to pre-fill the template and checksum fields. Does not change saved settings until you click Apply.
                 </div>
             </div>
 
@@ -88,7 +93,7 @@
             <div class="row">
                 <label>Preview URL</label>
                 <div class="url-box empty" id="previewUrl">(empty)</div>
-                <div class="test-result" id="customTestResult"></div>
+                <div class="status" id="customStatus"></div>
                 <div class="button-row">
                     <button
                         class="secondary"
@@ -97,7 +102,7 @@
                     >
                         Test URL
                     </button>
-                    <button data-action="apply">Apply</button>
+                    <button data-action="apply" id="customApplyBtn">Apply</button>
                 </div>
             </div>
         </div>
@@ -133,7 +138,7 @@
                     <option value="md5">MD5</option>
                 </select>
                 <div class="url-box empty hidden" id="sidecarUrl"></div>
-                <div class="test-result" id="sidecarTestResult"></div>
+                <div class="status" id="sidecarStatus"></div>
                 <div class="button-row hidden" id="sidecarBtnRow">
                     <button
                         class="secondary"
@@ -153,7 +158,7 @@
                     placeholder="https://..."
                 />
                 <div class="url-box empty hidden" id="manifestUrl"></div>
-                <div class="test-result" id="manifestTestResult"></div>
+                <div class="status" id="manifestStatus"></div>
                 <div class="button-row hidden" id="manifestBtnRow">
                     <button
                         class="secondary"
@@ -183,8 +188,9 @@
                 </select>
             </div>
 
+            <div class="status" id="checksumStatus"></div>
             <div class="button-row">
-                <button data-action="apply-checksum">Apply</button>
+                <button data-action="apply-checksum" id="checksumApplyBtn">Apply</button>
             </div>
         </div>
 

@@ -12,6 +12,13 @@ import {
 } from "../../src/server/url";
 import type { PlatformAdapter, ProductInfo } from "../../src/platform/types";
 
+// Substitute the feed module so the lazy `require()` inside resolveTemplateUrl
+// resolves under vitest (which does not interop CJS require natively).
+const feedMock = vi.fn<(v: string) => Promise<string>>();
+vi.mock("../../src/server/vscodiumFeed", () => ({
+  resolveNearestVsCodiumVersion: (v: string) => feedMock(v),
+}));
+
 function makeProductInfo(overrides: Partial<ProductInfo> = {}): ProductInfo {
   return {
     commit: "abc123",
@@ -145,6 +152,41 @@ describe("resolveTemplateUrl", () => {
       "x64",
     );
     expect(unresolved).toEqual(["${unknown}"]);
+  });
+
+  it("resolves ${nearestVsCodiumVersion} via the feed resolver", async () => {
+    const info = makeProductInfo({ commit: "abc123", version: "1.124.0" });
+    feedMock.mockResolvedValue("1.121.03429");
+
+    const { url, unresolved } = await resolveTemplateUrl(
+      "https://github.com/VSCodium/vscodium/releases/download/${nearestVsCodiumVersion}/vscodium-reh-${os}-${arch}-${nearestVsCodiumVersion}.tar.gz",
+      info,
+      "linux",
+      "x64",
+    );
+
+    expect(feedMock).toHaveBeenCalledWith("1.124.0");
+    expect(url).toBe(
+      "https://github.com/VSCodium/vscodium/releases/download/1.121.03429/vscodium-reh-linux-x64-1.121.03429.tar.gz",
+    );
+    expect(unresolved).toEqual([]);
+  });
+
+  it("reports unresolved when the feed returns empty", async () => {
+    const info = makeProductInfo({ commit: "abc123", version: "1.124.0" });
+    feedMock.mockResolvedValue("");
+
+    const { url, unresolved } = await resolveTemplateUrl(
+      "https://cdn.test/${nearestVsCodiumVersion}/reh.tar.gz",
+      info,
+      "linux",
+      "x64",
+    );
+
+    // Empty resolution substitutes an empty string - the placeholder is
+    // gone, but the URL is malformed. No unresolved placeholder remains.
+    expect(url).toBe("https://cdn.test//reh.tar.gz");
+    expect(unresolved).toEqual([]);
   });
 });
 

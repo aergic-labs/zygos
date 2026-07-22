@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "ignoreBinaries": ["ssh-keygen"],
-  "ignoreDependencies": ["sharp"],
+  "ignoreDependencies": ["ovsx"],
   "ignoreExportsUsedInFile": {
     "interface": true,
     "type": true,
@@ -14,8 +14,8 @@
     "src/builtin-disable/index.ts",
     "src/webview/configPanel.ts",
     "scripts/askpass/askpass-main.js",
-    "scripts/gen-icons.mjs",
-    "scripts/clock-skew-test.mjs"
+    "scripts/download-busybox.mjs",
+    "scripts/download-vscodium-versions.mjs"
   ],
   "project": ["src/**", "test/unit/**", "test/property/**", "scripts/**"]
 }
