@@ -140,7 +140,7 @@ function writeConflictDetails(ids: string[], logger: Logger): void {
  * Find extensions that declare onResolveRemoteAuthority:ssh-remote
  * in their activationEvents and are currently installed.
  */
-function findConflictingExtensions(
+export function findConflictingExtensions(
   platform: PlatformAdapter,
   logger: Logger,
 ): string[] {

@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
 import * as net from "node:net";
-import { downloadToBuffer } from "../../src/server/download";
+import { downloadToBuffer } from "../../src/remote/download";
 
 let server: http.Server;
 

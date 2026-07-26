@@ -35,6 +35,7 @@ export interface AskpassServerDeps {
 export class AskpassServer {
   private server: net.Server | undefined;
   private socketPath = "";
+  private stopping = false;
   private readonly pending = new Map<net.Socket, { buffer: string }>();
   /** Prompts for host passwords (non-key) handled this session.
    * Used to evict bad passwords on resolve failure. */
@@ -88,6 +89,7 @@ export class AskpassServer {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     for (const [socket] of this.pending) {
       try {
         socket.destroy();
@@ -98,6 +100,9 @@ export class AskpassServer {
     this.pending.clear();
     const server = this.server;
     if (server) {
+      // Destroy any connection that arrives after we start closing.
+      server.removeAllListeners("connection");
+      server.on("connection", (s: net.Socket) => s.destroy());
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
       });
@@ -106,7 +111,7 @@ export class AskpassServer {
     // Clean up the socket file (Unix only - named pipes are auto-removed).
     if (this.socketPath && process.platform !== "win32") {
       try {
-        require("node:fs").unlinkSync(this.socketPath);
+        fs.unlinkSync(this.socketPath);
       } catch {
         // ignore - may already be gone
       }
@@ -133,6 +138,7 @@ export class AskpassServer {
   }
 
   private handleConnection(socket: net.Socket): void {
+    if (this.stopping) { socket.destroy(); return; }
     this.pending.set(socket, { buffer: "" });
 
     socket.on("data", (data: Buffer) => {
@@ -218,7 +224,7 @@ export class AskpassServer {
 
         const result = validatePassphrase(keyPath, password);
         if (result.valid) {
-          await setCached(prompt, password);
+          await setCached(prompt, password, true);
           this.logger.info(`[askpass] CACHED passphrase for: ${prompt}`);
           this.respond(socket, { password });
           return;
@@ -247,11 +253,11 @@ export class AskpassServer {
     const id = crypto.randomBytes(16).toString("hex");
     if (process.platform === "win32") {
       // Named pipes on Windows live in \\.\pipe\
-      return `\\\\.\\pipe\\zygos-askpass-${id}`;
+      return `\\\\.\\pipe\\aergic-askpass-${id}`;
     }
     // Unix socket - use the OS temp dir, keep the path short
     // (108-char limit on Linux).
     const tmp = os.tmpdir();
-    return path.join(tmp, `zygos-askpass-${id}.sock`);
+    return path.join(tmp, `aergic-askpass-${id}.sock`);
   }
 }

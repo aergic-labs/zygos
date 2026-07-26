@@ -11,13 +11,13 @@ import * as os from "node:os";
 import { KiroAdapter } from "../../src/platform/kiro";
 import { VscodiumAdapter } from "../../src/platform/vscodium";
 import { getProductInfo, readProductJson } from "../../src/platform/index";
-import { initVscodiumFeed } from "../../src/server/vscodiumFeed";
+import { initVscodiumFeed } from "../../src/remote/vscodiumFeed";
 import { setConfig, resetConfig, env as vscodeEnv } from "../__mocks__/vscode";
 
 // Substitute the feed module so the lazy `require()` inside the
 // VscodiumAdapter vscode-oss branch resolves under vitest.
 const feedMock = vi.fn<(v: string) => Promise<string>>();
-vi.mock("../../src/server/vscodiumFeed", () => ({
+vi.mock("../../src/remote/vscodiumFeed", () => ({
   initVscodiumFeed: () => {},
   resolveNearestVsCodiumVersion: (v: string) => feedMock(v),
 }));

@@ -52,7 +52,7 @@ function tempBase(): string {
 /** Generate a 128-bit random dir name (32 hex chars), prefixed for
  * identification in temp dir listings. */
 function randomName(): string {
-  return `zygos-${crypto.randomBytes(16).toString("hex")}`;
+  return `aergic-${crypto.randomBytes(16).toString("hex")}`;
 }
 
 /**

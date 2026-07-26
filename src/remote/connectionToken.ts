@@ -15,6 +15,7 @@
 import type { SshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import { REMOTE_DIR_NAME, bbExecWithStdin, bbExec, shellQuote } from "./busybox";
+import * as path from "node:path";
 
 /**
  * Write the connection token to a file on the remote with mode 600.
@@ -29,8 +30,10 @@ export async function writeConnectionTokenFile(
   home: string,
   token: string,
   logger: Logger,
+  installPath?: string,
 ): Promise<string> {
-  const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token`;
+  const suffix = installPath ? `-${path.basename(installPath)}` : "";
+  const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${suffix}`;
   // umask 077 -> file is created mode 600 regardless of the remote's default.
   const cmd = `mkdir -p ${shellQuote(`${home}/${REMOTE_DIR_NAME}`)} && umask 077 && cat > ${shellQuote(tokenFile)}`;
   logger.info(`[conn-token] writing token file at ${tokenFile}`);
@@ -56,8 +59,10 @@ export async function readConnectionTokenFile(
   conn: SshConnection,
   home: string,
   logger: Logger,
+  installPath?: string,
 ): Promise<string | undefined> {
-  const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token`;
+  const suffix = installPath ? `-${path.basename(installPath)}` : "";
+  const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${suffix}`;
   logger.info(`[conn-token] reading token file at ${tokenFile}`);
   const result = await bbExec(
     conn,

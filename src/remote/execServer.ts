@@ -14,7 +14,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../common/logger";
 import { SshConnection } from "../ssh/connection";
-import { shellQuote } from "../server/busybox";
+import { shellQuote } from "../remote/busybox";
 import { socks5Connect } from "../net/socks5";
 import { wrapSocket } from "../net/managedConnection";
 import { SimpleEvent } from "../common/event";
@@ -279,12 +279,11 @@ export class SshExecServer {
 
       let type = FT_UNKNOWN;
       if (
-        typeStr === "regular file" ||
-        typeStr === "regularfile" ||
+        typeStr.startsWith("regular") ||
         typeStr === "File"
       ) {
         type = FT_FILE;
-      } else if (typeStr === "directory" || typeStr === "Directory") {
+      } else if (typeStr.startsWith("directory") || typeStr === "Directory") {
         type = FT_DIR;
       } else if (
         typeStr.includes("symbolic link") ||
@@ -342,8 +341,8 @@ export class SshExecServer {
         } else if (last === "@") {
           type = FT_SYMLINK;
           name = line.slice(0, -1);
-        } else if (last === "*") {
-          type = FT_FILE;
+        } else if (last === "*" || last === "=" || last === "|") {
+          type = last === "|" ? FT_UNKNOWN : FT_FILE;
           name = line.slice(0, -1);
         } else {
           type = FT_FILE;
@@ -388,6 +387,9 @@ export class SshExecServer {
     const parts: string[] = [];
     if (options?.env) {
       for (const [k, v] of Object.entries(options.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+          throw new Error(`Invalid env var name: ${k}`);
+        }
         parts.push(`${k}=${shellQuote(v)}`);
       }
     }

@@ -24,8 +24,7 @@
 
 import { createHash } from "node:crypto";
 import { resolveTemplateUrl } from "./url";
-import type { ProductInfo } from "../platform/types";
-import type { Logger } from "../common/logger";
+import type { DownloadTemplateInfo, MinimalLogger } from "../platform/downloadTypes";
 
 export interface ChecksumResult {
   /** The expected hash from the sidecar or manifest. */
@@ -59,9 +58,10 @@ export function parseChecksumBody(body: string): string | undefined {
 async function fetchSidecarChecksum(
   downloadUrl: string,
   algo: "sha256" | "md5",
+  fetchFn: typeof fetch,
 ): Promise<string | undefined> {
   const sidecarUrl = `${downloadUrl}.${algo}`;
-  const res = await fetch(sidecarUrl, {
+  const res = await fetchFn(sidecarUrl, {
     signal: AbortSignal.timeout(15_000),
   });
   // 403/404 = no sidecar available (Kiro CDN returns 403 for missing objects)
@@ -82,8 +82,9 @@ async function fetchSidecarChecksum(
 async function fetchManifestChecksum(
   manifestUrl: string,
   field: string,
+  fetchFn: typeof fetch,
 ): Promise<string | undefined> {
-  const res = await fetch(manifestUrl, {
+  const res = await fetchFn(manifestUrl, {
     signal: AbortSignal.timeout(15_000),
   });
   if (res.status === 404 || res.status === 403) return undefined;
@@ -105,10 +106,11 @@ async function fetchManifestChecksum(
  */
 export async function fetchExpectedChecksum(
   downloadUrl: string,
-  info: ProductInfo,
+  info: DownloadTemplateInfo,
   os: string,
   arch: string,
-  logger: Logger,
+  logger: MinimalLogger,
+  fetchFn: typeof fetch = globalThis.fetch,
 ): Promise<ChecksumResult | NoChecksumResult> {
   if (info.checksumMethod === "manifest") {
     // Manifest method: fetch JSON and extract hash field.
@@ -124,7 +126,7 @@ export async function fetchExpectedChecksum(
           logger.info(`[checksum] manifest template has unresolved vars: ${unresolved.join(", ")}`);
           return { reason: "parse-failed", detail: "unresolved manifest template variables" };
         }
-        const hash = await fetchManifestChecksum(url, info.manifestField);
+        const hash = await fetchManifestChecksum(url, info.manifestField, fetchFn);
         if (hash) {
           const algo = info.checksumAlgo ?? "sha256";
           logger.info(`[checksum] manifest ${algo}=${hash}`);
@@ -139,7 +141,7 @@ export async function fetchExpectedChecksum(
     // Sidecar method: fetch downloadUrl + "." + algo.
     if (info.checksumAlgo) {
       try {
-        const hash = await fetchSidecarChecksum(downloadUrl, info.checksumAlgo);
+        const hash = await fetchSidecarChecksum(downloadUrl, info.checksumAlgo, fetchFn);
         if (hash) {
           logger.info(`[checksum] sidecar ${info.checksumAlgo}=${hash}`);
           return { expectedHash: hash, algo: info.checksumAlgo, source: "sidecar" };

@@ -8,7 +8,7 @@
  *
  * Precedence (highest first):
  *   1. ProductInfo.serverDownloadUrlTemplate (from
- *      zygos.serverDownload.template when mode="custom")
+ *      <ns>.serverDownload.template when mode="custom")
  *   2. adapter.getServerDownloadUrl() fallback
  *
  * Template variables:
@@ -19,7 +19,7 @@
  *            directory as the tarball - Trae)
  */
 
-import type { PlatformAdapter, ProductInfo } from "../platform/types";
+import type { DownloadTemplateInfo, DownloadAdapter } from "../platform/downloadTypes";
 import { resolveNearestVsCodiumVersion } from "./vscodiumFeed";
 
 /**
@@ -28,7 +28,7 @@ import { resolveNearestVsCodiumVersion } from "./vscodiumFeed";
  */
 export function substituteTemplate(
   template: string,
-  info: ProductInfo,
+  info: DownloadTemplateInfo,
   os: string,
   arch: string,
 ): string {
@@ -86,7 +86,7 @@ export async function fetchCdnVersion(partialUrl: string): Promise<string> {
  */
 export async function resolveTemplateUrl(
   template: string,
-  info: ProductInfo,
+  info: DownloadTemplateInfo,
   os: string,
   arch: string,
 ): Promise<{ url: string; unresolved: string[] }> {
@@ -104,18 +104,23 @@ export async function resolveTemplateUrl(
 }
 
 export async function buildServerDownloadUrl(
-  info: ProductInfo,
-  adapter: PlatformAdapter,
+  info: DownloadTemplateInfo,
+  adapter: DownloadAdapter,
   os: string,
   arch: string,
 ): Promise<string> {
   if (info.serverDownloadUrlTemplate) {
-    const { url } = await resolveTemplateUrl(
+    const { url, unresolved } = await resolveTemplateUrl(
       info.serverDownloadUrlTemplate,
       info,
       os,
       arch,
     );
+    if (unresolved.length > 0) {
+      throw new Error(
+        `Server download URL has unresolved variables: ${unresolved.join(", ")}`,
+      );
+    }
     return url;
   }
   return adapter.getServerDownloadUrl(info.commit, info.quality, os, arch);

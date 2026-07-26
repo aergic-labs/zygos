@@ -13,7 +13,7 @@ import {
   localBusyboxPath,
   shellQuote,
   normalizeArch,
-} from "../../src/server/busybox";
+} from "../../src/remote/busybox";
 
 describe("remoteToolsDir", () => {
   it("returns $HOME/.ssh-remote/bin", () => {

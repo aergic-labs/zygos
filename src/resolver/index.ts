@@ -25,23 +25,23 @@
 import * as vscode from "vscode";
 import * as net from "node:net";
 import * as crypto from "node:crypto";
+import * as path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../common/logger";
 import { SshConnection, type SshConnectOptions } from "../ssh/connection";
 import { decodeAuthority, parseAuthority } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
-import { ensureServerInstalled } from "../server/install";
-import { shellQuote, remoteShPath, remoteToolsDir } from "../server/busybox";
-import { probeHome } from "../server/busybox";
-import { copyAuthToken } from "../server/authToken";
+import { ensureServerInstalled } from "../remote/install";
+import { shellQuote, remoteShPath, remoteToolsDir } from "../remote/busybox";
+import { copyAuthToken } from "../remote/authToken";
 import {
   writeConnectionTokenFile,
   removeConnectionTokenFile,
   readConnectionTokenFile,
-} from "../server/connectionToken";
+} from "../remote/connectionToken";
 import { socks5Connect } from "../net/socks5";
 import { wrapSocket } from "../net/managedConnection";
-import { SshExecServer } from "../server/execServer";
+import { SshExecServer } from "../remote/execServer";
 import { AskpassServer } from "../ssh/askpassServer";
 import {
   cleanupZombieServer,
@@ -50,7 +50,7 @@ import {
   acquireResolveLock,
   releaseResolveLock,
   probeServerPid,
-} from "../server/lifecycle";
+} from "../remote/lifecycle";
 import {
   ConnectionMonitor,
   type MonitoredConnection,
@@ -107,6 +107,8 @@ export type ConnectionFactory = (
 export class SshRemoteResolver {
   /** Active connections keyed by authority (for reconnect cleanup). */
   private connections = new Map<string, RemoteConnection>();
+  /** Label formatters keyed by authority (disposed on reconnect/deactivate). */
+  private labelFormatters = new Map<string, vscode.Disposable>();
 
   constructor(
     private readonly logger: Logger,
@@ -215,7 +217,6 @@ export class SshRemoteResolver {
     // "root [SSH]". Registered per-connect; the hostname is encoded in the
     // authority hex.
     const hostLabel = dest.user ? `${dest.user}@${dest.host}` : dest.host;
-    registerLabelFormatter(authority, hostLabel);
 
     // Reuse an existing healthy connection for this authority. VS Code
     // calls resolve() again when opening a new folder on the same remote;
@@ -229,6 +230,12 @@ export class SshRemoteResolver {
         makeConnection: prev.makeConnection,
         connectionToken: prev.connectionToken,
       };
+    }
+
+    // Register label formatter only when not reusing (avoids per-resolve leak).
+    if (!this.labelFormatters.has(authority)) {
+      const disp = registerLabelFormatter(authority, hostLabel);
+      this.labelFormatters.set(authority, disp);
     }
 
     // Clean up any previous (dead) connection for this authority.
@@ -246,9 +253,6 @@ export class SshRemoteResolver {
     });
     await conn.connect();
 
-    report("Probing remote environment...");
-    const home = await probeHome(conn);
-
     report("Ensuring server is installed...");
     const installResult = await ensureServerInstalled(
       conn,
@@ -256,7 +260,6 @@ export class SshRemoteResolver {
       productInfo,
       this.logger,
       this.extensionPath,
-      home,
       {
         onDownloadProgress: (received, total) => {
           if (total) {
@@ -283,7 +286,7 @@ export class SshRemoteResolver {
     // install path would race on server start + metadata writes.
     const locked = await acquireResolveLock(
       conn,
-      home,
+      installResult.home,
       installResult.installPath,
       this.logger,
     );
@@ -296,7 +299,7 @@ export class SshRemoteResolver {
     // Copy the IDE auth token (e.g. Kiro SSO) to avoid making the user sign
     // in again on the remote.
     report("Copying auth token...");
-    await copyAuthToken(conn, home, platform, this.logger);
+    await copyAuthToken(conn, installResult.home, platform, this.logger);
 
     // Generate a connection token (the server validates this on every
     // connection). Written to a chmod 600 file on the remote and passed via
@@ -310,7 +313,7 @@ export class SshRemoteResolver {
     report("Checking for existing server...");
     const zombieResult = await cleanupZombieServer(
       conn,
-      home,
+      installResult.home,
       installResult.installPath,
       this.logger,
     );
@@ -323,8 +326,9 @@ export class SshRemoteResolver {
       serverProcess = undefined;
       const existingToken = await readConnectionTokenFile(
         conn,
-        home,
+        installResult.home,
         this.logger,
+        installResult.installPath,
       );
       if (!existingToken) {
         this.logger.info(
@@ -333,13 +337,14 @@ export class SshRemoteResolver {
         connectionToken = generateToken();
         tokenFile = await writeConnectionTokenFile(
           conn,
-          home,
+          installResult.home,
           connectionToken,
           this.logger,
+          installResult.installPath,
         );
       } else {
         connectionToken = existingToken;
-        tokenFile = `${home}/.ssh-remote/conn-token`;
+        tokenFile = `${installResult.home}/.ssh-remote/conn-token-${path.basename(installResult.installPath)}`;
         this.logger.info("[resolve] using existing connection token");
       }
     } else {
@@ -348,14 +353,15 @@ export class SshRemoteResolver {
       connectionToken = generateToken();
       tokenFile = await writeConnectionTokenFile(
         conn,
-        home,
+        installResult.home,
         connectionToken,
         this.logger,
+        installResult.installPath,
       );
       try {
         const started = await this.startServer(
           conn,
-          home,
+          installResult.home,
           installResult.installPath,
           productInfo.serverApplicationName,
           tokenFile,
@@ -367,7 +373,7 @@ export class SshRemoteResolver {
         if (locked) {
           await releaseResolveLock(
             conn,
-            home,
+            installResult.home,
             installResult.installPath,
             this.logger,
           );
@@ -377,17 +383,20 @@ export class SshRemoteResolver {
     }
 
     // Write PID/port files for a new server (not needed when reusing).
+    let forwardProcess: ChildProcess | undefined;
+    let socksPort = 0;
+    try {
     if (!zombieResult.reusePort) {
       const remotePid = await probeServerPid(
         conn,
-        home,
+        installResult.home,
         installResult.installPath,
         this.logger,
       );
       if (remotePid !== undefined) {
         await writeServerMetadata(
           conn,
-          home,
+          installResult.home,
           installResult.installPath,
           remotePid,
           remotePort,
@@ -400,7 +409,7 @@ export class SshRemoteResolver {
     if (locked) {
       await releaseResolveLock(
         conn,
-        home,
+        installResult.home,
         installResult.installPath,
         this.logger,
       );
@@ -410,14 +419,19 @@ export class SshRemoteResolver {
     // makeConnection() for each server-protocol connection it needs; each
     // call does a SOCKS5 CONNECT to 127.0.0.1:remotePort through this proxy.
     report("Starting SOCKS forward...");
-    const socksPort = await findFreePort();
-    const forwardProcess = this.startSocksForward(conn, socksPort);
+    socksPort = await findFreePort();
+    forwardProcess = this.startSocksForward(conn, socksPort);
 
     // Wait for the SOCKS proxy to be ready.
     await waitForPort(socksPort, 10_000);
     this.logger.info(
       `[resolve] SOCKS proxy on 127.0.0.1:${socksPort} -> remote:${remotePort}`,
     );
+    } catch (err) {
+      if (serverProcess) serverProcess.kill();
+      if (forwardProcess) forwardProcess.kill();
+      throw err;
+    }
 
     // Build the mutable connection object. The monitor updates
     // socksPort/forwardProcess/dead in place; makeConnection() reads them
@@ -432,7 +446,7 @@ export class SshRemoteResolver {
       dead: false,
       monitor: undefined as any, // set below
       askpass,
-      home,
+      home: installResult.home,
       installPath: installResult.installPath,
       makeConnection: undefined as any, // set below
       connectionToken,
@@ -824,9 +838,13 @@ export class SshRemoteResolver {
       connState.monitor = monitor;
       monitor.start();
 
-      // Store the forward process for cleanup, keyed by authority + ':execServer'
-      // to avoid clashing with the resolve() connection.
-      this.connections.set(`${authority}:execServer`, connState);
+      const execKey = `${authority}:execServer`;
+      const prev = this.connections.get(execKey);
+      if (prev) {
+        this.killConnection(prev);
+        this.connections.delete(execKey);
+      }
+      this.connections.set(execKey, connState);
 
       const execServer = new SshExecServer(conn, socksPort, this.logger);
       this.logger.info(`[resolveExecServer] ready for ${hostLabel}`);
@@ -855,6 +873,8 @@ export class SshRemoteResolver {
       this.killConnection(conn);
     }
     this.connections.clear();
+    for (const disp of this.labelFormatters.values()) disp.dispose();
+    this.labelFormatters.clear();
   }
 
   private killConnection(conn: RemoteConnection): void {
@@ -959,8 +979,8 @@ export function waitForPort(port: number, timeoutMs: number): Promise<void> {
 export function registerLabelFormatter(
   authority: string,
   hostLabel: string,
-): void {
-  (vscode.workspace as any).registerResourceLabelFormatter({
+): vscode.Disposable {
+  return (vscode.workspace as any).registerResourceLabelFormatter({
     scheme: "vscode-remote",
     authority,
     formatting: {

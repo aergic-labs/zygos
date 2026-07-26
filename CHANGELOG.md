@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.3.0]
+
+### Added
+
+- `${PRODUCT_NAME}` token in the config webview HTML.
+- Vitest lcov + html coverage reporters.
+- Tests for `forkTemplates`, `mergeConfig`, `secureTempDir` EEXIST retry, askpass cache sweep, `AskpassServer.generateSocketPath`.
+
+### Changed
+
+- Askpass env vars renamed to `AERGIC_SSH_ASKPASS_*` and `aergic-askpass-` socket prefix, shared with artizo.
+- Server install probes HOME, arch, busybox, and existing install in a single SSH call.
+- `resources/webview/` renamed to `resources/serverDownload/`.
+- `src/server/` moved to `src/remote/`.
+- ESLint upgraded to 10.8.0.
+
+### Fixed
+
+- Batched remote probe had an unclosed `$(`; parse by `:::` markers. Throws on empty HOME.
+- `ssh host:port` destination; pass `[-p, port, user@host]` as separate args.
+- Leaked ssh processes when resolve fails after server start.
+- Unhandled `'error'` on the dirty askpass db.
+- Stale-lock reclaim race in `lifecycle.ts`.
+- Global connection-token file shared across installs; filename now per install path.
+- Probe timer rescheduled after `stop()`.
+- Label formatter re-registered per resolve, never disposed.
+- Webview message listener outlived the panel.
+- Unhandled rejection in the webview `getState` handler.
+- Stdin writer hung/leaked when the remote exited early.
+- `dispose()` racing `init()`'s key rotation.
+- Unvalidated PID interpolated into `kill` commands.
+- `fs.stat` misclassifying empty regular files.
+- Conflict popup re-shown on every extension change.
+- `OutputChannel` never disposed.
+- `resolveExecServer` leak for the same authority.
+- `askpassServer.stop()` could hang forever.
+- Passphrase validated twice per prompt.
+- Commit interpolated into sed without validation.
+- Env var names unquoted in `buildCommand`.
+- Unresolved URL placeholders silently returned.
+- `ls -F` indicator chars `=`, `|` leaking into names.
+- Empty error dialog on wrong runtime.
+- SSRF guard bypassable via non-dotted IP forms.
+- `zygos.hosts` tree view registered too late; VS Code showed "No view is registered" toast when restoring view state in a new ssh-remote window before activation finished.
+- `CHANGELOG.md` excluded from VSIX; Open VSX surfaces it on the extension page.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added

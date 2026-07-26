@@ -47,9 +47,9 @@ let dbPath: string;
 let tempDir: string;
 
 async function initTestCache(): Promise<void> {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-cache-test-"));
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-cache-test-"));
   dbPath = path.join(tempDir, "askpass.db");
-  await initCache(makeMockSecrets(), dbPath, mockLogger);
+  await initCache(makeMockSecrets(), dbPath, mockLogger, "test.askpass.masterkey");
 }
 
 async function disposeTestCache(): Promise<void> {
@@ -111,7 +111,7 @@ describe("validatePassphrase", () => {
   it("returns invalid when ssh-keygen fails on a non-key file", () => {
     const tmpFile = path.join(
       os.tmpdir(),
-      `zygos-test-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
+      `aergic-test-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
     );
     fs.writeFileSync(tmpFile, "not a key");
     try {
@@ -221,7 +221,7 @@ describe("setCached (key passphrase)", () => {
   it("rejects a key passphrase when ssh-keygen fails", async () => {
     const tmpFile = path.join(
       os.tmpdir(),
-      `zygos-key-${Date.now()}-${Math.random().toString(36).slice(2)}.key`,
+      `aergic-key-${Date.now()}-${Math.random().toString(36).slice(2)}.key`,
     );
     fs.writeFileSync(tmpFile, "not a real key");
     try {
@@ -233,6 +233,102 @@ describe("setCached (key passphrase)", () => {
     } finally {
       fs.rmSync(tmpFile);
     }
+  });
+});
+
+describe("sweep", () => {
+  // sweep() runs inside init(). Drive it by disposing and re-initializing
+  // with the SAME SecretStorage so the master key persists and cached
+  // entries can still be decrypted (otherwise they evict via the
+  // decrypt-failed path, not the path under test).
+
+  it("evicts entries whose key file mtime changed since caching", async () => {
+    const secrets = makeMockSecrets();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-sweep-"));
+    dbPath = path.join(tempDir, "askpass.db");
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    // Real file standing in for an SSH key. skipValidation lets us cache a
+    // passphrase for it without ssh-keygen.
+    const keyFile = path.join(tempDir, "fake.key");
+    fs.writeFileSync(keyFile, "not a key");
+    const prompt = `Enter passphrase for key '${keyFile}':`;
+
+    const stored = await setCached(prompt, "secret", true);
+    expect(stored.stored).toBe(true);
+    expect(await getCached(prompt)).toBe("secret");
+
+    // Bump the key file's mtime forward so sweep sees a change.
+    const future = new Date(Date.now() / 1000 * 1000 + 5000);
+    fs.utimesSync(keyFile, future, future);
+
+    await disposeCache();
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    expect(await getCached(prompt)).toBeUndefined();
+
+    await disposeCache();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  it("evicts entries whose key file no longer exists", async () => {
+    const secrets = makeMockSecrets();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-sweep-"));
+    dbPath = path.join(tempDir, "askpass.db");
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    const keyFile = path.join(tempDir, "gone.key");
+    fs.writeFileSync(keyFile, "not a key");
+    const prompt = `Enter passphrase for key '${keyFile}':`;
+    await setCached(prompt, "secret", true);
+    fs.unlinkSync(keyFile);
+
+    await disposeCache();
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    expect(await getCached(prompt)).toBeUndefined();
+
+    await disposeCache();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  it("evicts TTL-expired entries on re-init sweep", async () => {
+    // TTL of ~0.25h (900s) keeps the test fast while still being a real
+    // wall-clock wait. We sleep 1.1s with a TTL of 1 second.
+    const secrets = makeMockSecrets();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-sweep-"));
+    dbPath = path.join(tempDir, "askpass.db");
+    // ttlHours is in hours; 1/3600 = 1 second.
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey", 1 / 3600);
+
+    await setCached("host-prompt", "secret");
+    expect(await getCached("host-prompt")).toBe("secret");
+
+    await new Promise((r) => setTimeout(r, 1300));
+
+    await disposeCache();
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey", 1 / 3600);
+
+    expect(await getCached("host-prompt")).toBeUndefined();
+
+    await disposeCache();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  it("keeps unexpired, unchanged entries across re-init", async () => {
+    const secrets = makeMockSecrets();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-sweep-"));
+    dbPath = path.join(tempDir, "askpass.db");
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    await setCached("persist-prompt", "secret");
+    await disposeCache();
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+
+    expect(await getCached("persist-prompt")).toBe("secret");
+
+    await disposeCache();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
   });
 });
 
@@ -250,7 +346,7 @@ describe("persistence across instances", () => {
     // fresh, so the old ciphertext can't be decrypted. Verify the entry
     // still exists but can't be read with a different key).
     const secrets2 = makeMockSecrets();
-    await initCache(secrets2, dbPath, mockLogger);
+    await initCache(secrets2, dbPath, mockLogger, "test.askpass.masterkey");
 
     // With a different encryption key, the old ciphertext fails to decrypt
     // and is evicted.
@@ -259,15 +355,15 @@ describe("persistence across instances", () => {
 
   it("survives dispose + re-init with the same secret storage", async () => {
     const secrets = makeMockSecrets();
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-cache-test-"));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-cache-test-"));
     dbPath = path.join(tempDir, "askpass.db");
-    await initCache(secrets, dbPath, mockLogger);
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
 
     await setCached("prompt", "persisted-secret");
     await disposeCache();
 
     // Re-init with the SAME secret storage (same encryption key).
-    await initCache(secrets, dbPath, mockLogger);
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
     expect(await getCached("prompt")).toBe("persisted-secret");
 
     await disposeCache();

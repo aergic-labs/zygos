@@ -5,9 +5,12 @@
 #   make package      - build + package both VSIXs (kiro + vscodium)
 #   make package-kiro - build + package kiro VSIX only
 #   make package-vscodium - build + package vscodium VSIX only
+#   make check        - full quality gate (lint + test)
+#   make lint         - typecheck + eslint + knip
 #   make busybox      - download + verify busybox binaries
 #   make test         - run vitest
 #   make typecheck    - tsc --noEmit
+#   make release VERSION=x.y.z - bump version, check, package, tag
 #   make clean        - remove dist/ and VSIX files
 #   make distclean    - also remove downloaded busybox binaries
 #   make publish      - package + publish both VSIXs to OpenVSX
@@ -18,7 +21,7 @@ VERSION := $(shell npm pkg get version | tr -d '"')
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: build package package-kiro package-vscodium test typecheck clean distclean busybox vscodium-versions publish
+.PHONY: build package package-kiro package-vscodium check lint test typecheck release clean distclean busybox vscodium-versions publish
 
 # Always re-download + verify so SHA256 checks run on every build.
 busybox:
@@ -47,6 +50,23 @@ publish: package
 
 test:
 	$(NPX) vitest run
+
+lint:
+	npm run lint
+
+check: lint test
+
+release:
+	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=x.y.z" && exit 1)
+	@echo "=== Releasing version $(VERSION) ==="
+	npm version $(VERSION) --no-git-tag-version
+	$(MAKE) check
+	$(MAKE) package
+	git add package.json package-lock.json
+	git commit -m "Release $(VERSION)"
+	git tag "v$(VERSION)"
+	@echo "=== Release $(VERSION) ready ==="
+	@echo "Next: git push --follow-tags, then make publish"
 
 typecheck:
 	$(NPX) tsc --noEmit

@@ -100,10 +100,10 @@ export async function resolveNearestVsCodiumVersion(
       return pickMatch(set2, local) ?? "";
     }
 
-    // Page 1 is sorted descending - its highest entry is the global
+    // Page 1 is sorted descending, so its highest entry is the global
     // highest vscodium release. If page 1 has no version >= local,
- // vscodium hasn't released one. Return the highest available as
-    // the best match rather than fetching every remaining page.
+    // vscodium hasn't released one - return the highest available as
+    // the best match rather than paging through every release.
     if (page === 1) {
       const set2 = loadUnion();
       return pickHighestLe(set2, local) ?? "";

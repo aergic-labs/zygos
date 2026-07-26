@@ -72,9 +72,11 @@ function makeResolver(fake: FakeSshConnection): SshRemoteResolver {
 
 /** Configure a FakeSshConnection with responses for the full resolve() flow. */
 function configureForResolve(fake: FakeSshConnection, listenPort = 9876): void {
-  fake.setResponse("printenv HOME", ok("/home/testuser"));
-  fake.setResponse("uname", ok("x86_64\nBB_YES"));
-  fake.setResponse("test -f", ok("ALREADY_INSTALLED"));
+  // probeRemote returns: home:::arch:::busybox:::installed
+  fake.setResponse(
+    "printenv",
+    ok("/home/testuser:::x86_64:::yes:::yes"),
+  );
   fake.setResponse("echo ok", ok("ok"));
   fake.setResponse("umask", ok());
   fake.setSpawnStdout(`Extension host agent listening on ${listenPort}\n`);

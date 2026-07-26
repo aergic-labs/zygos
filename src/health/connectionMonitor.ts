@@ -69,6 +69,7 @@ const MIN_PROBE_GAP_MS = 15_000; // debounce: never probe more than once per 15s
 export class ConnectionMonitor {
   private readonly detector = new SleepDetector();
   private periodicTimer: NodeJS.Timeout | undefined;
+  private stopped = false;
   private lastProbeAt = 0;
   private inFlight: Promise<void> | undefined;
   private readonly disposables: vscode.Disposable[] = [];
@@ -108,6 +109,7 @@ export class ConnectionMonitor {
 
   stop(): void {
     this.detector.stop();
+    this.stopped = true;
     if (this.periodicTimer) {
       clearTimeout(this.periodicTimer);
       this.periodicTimer = undefined;
@@ -128,9 +130,9 @@ export class ConnectionMonitor {
 
   private schedulePeriodic(): void {
     const tick = async (): Promise<void> => {
-      if (this.conn.dead) return;
+      if (this.stopped || this.conn.dead) return;
       await this.triggerProbe("periodic");
-      if (this.conn.dead) return;
+      if (this.stopped || this.conn.dead) return;
       this.periodicTimer = setTimeout(tick, PERIODIC_PROBE_MS);
       if (this.periodicTimer.unref) this.periodicTimer.unref();
     };

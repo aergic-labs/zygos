@@ -17,6 +17,7 @@ export default defineConfig({
     exclude: ["test/integration/**", "node_modules/**", "upstream/**"],
     coverage: {
       provider: "v8",
+      reporter: ["text", "lcov", "html"],
       include: ["src/**"],
     },
     alias: [

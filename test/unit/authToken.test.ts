@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { copyAuthToken } from "../../src/server/authToken";
+import { copyAuthToken } from "../../src/remote/authToken";
 import { FakeSshConnection, noopLogger } from "../__mocks__/fakeSshConnection";
 import type { PlatformAdapter } from "../../src/platform/types";
 

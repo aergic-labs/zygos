@@ -16,6 +16,7 @@ tools/busybox/provenance.json
 upstream/
 tmp/
 research/
+plans/
 
 # Test artifacts
 coverage/

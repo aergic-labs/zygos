@@ -12,7 +12,7 @@
     "src/host/index.ts",
     "src/host/treeView.ts",
     "src/builtin-disable/index.ts",
-    "src/webview/configPanel.ts",
+    "src/webviews/serverDownloadPanel.ts",
     "scripts/askpass/askpass-main.js",
     "scripts/download-busybox.mjs",
     "scripts/download-vscodium-versions.mjs"

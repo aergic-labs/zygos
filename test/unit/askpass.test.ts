@@ -3,17 +3,37 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import * as net from "node:net";
+import * as os from "node:os";
+import * as path from "node:path";
 import { AskpassServer } from "../../src/ssh/askpassServer";
 
 const mockLogger = {
-	info: () => {},
-	debug: () => {},
-	error: () => {},
-	show: () => {},
-	dispose: () => {},
+  info: () => {},
+  debug: () => {},
+  error: () => {},
+  show: () => {},
+  dispose: () => {},
 };
+
+const realPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+function setPlatform(p: string): void {
+  Object.defineProperty(process, "platform", {
+    value: p,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function restorePlatform(): void {
+  if (realPlatform) {
+    Object.defineProperty(process, "platform", realPlatform);
+  }
+}
+
+afterEach(restorePlatform);
 
 describe("AskpassServer", () => {
   it("responds with the password from showPrompt", async () => {
@@ -150,6 +170,41 @@ describe("AskpassServer", () => {
     expect(response).toEqual({ cancelled: true });
 
     await server.stop();
+  });
+});
+
+describe("AskpassServer.generateSocketPath", () => {
+  // generateSocketPath is private; call it via the server instance without
+  // starting a listener so the path-format branches can be exercised on
+  // any host OS without a real socket/pipe.
+  it("returns a Windows named-pipe path on win32", () => {
+    setPlatform("win32");
+    const server = new AskpassServer(mockLogger as any, {
+      showPrompt: vi.fn(),
+    });
+    const p = (server as unknown as { generateSocketPath(): string }).generateSocketPath();
+    expect(p.startsWith("\\\\.\\pipe\\aergic-askpass-")).toBe(true);
+    // 32 hex chars after the prefix.
+    expect(p.slice("\\\\.\\pipe\\aergic-askpass-".length)).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("returns a Unix socket path under os.tmpdir() on linux", () => {
+    setPlatform("linux");
+    const server = new AskpassServer(mockLogger as any, {
+      showPrompt: vi.fn(),
+    });
+    const p = (server as unknown as { generateSocketPath(): string }).generateSocketPath();
+    expect(path.dirname(p)).toBe(os.tmpdir());
+    expect(path.basename(p)).toMatch(/^aergic-askpass-[0-9a-f]{32}\.sock$/);
+  });
+
+  it("returns a Unix socket path on darwin", () => {
+    setPlatform("darwin");
+    const server = new AskpassServer(mockLogger as any, {
+      showPrompt: vi.fn(),
+    });
+    const p = (server as unknown as { generateSocketPath(): string }).generateSocketPath();
+    expect(path.basename(p)).toMatch(/^aergic-askpass-[0-9a-f]{32}\.sock$/);
   });
 });
 

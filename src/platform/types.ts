@@ -4,17 +4,31 @@
  */
 
 /**
+ * Zygos-specific platform adapter and product info types.
+ *
+ * The shared download-stack interfaces (MinimalLogger, DownloadAdapter,
+ * DownloadTemplateInfo) live in `downloadTypes.ts` and are re-exported
+ * here for backward compatibility. Sibling projects copy
+ * `downloadTypes.ts` verbatim and define their own adapter/product-info
+ * types that extend those interfaces.
+ */
+
+export type {
+  MinimalLogger,
+  DownloadAdapter,
+  DownloadTemplateInfo,
+} from "./downloadTypes";
+
+import type { DownloadAdapter, DownloadTemplateInfo } from "./downloadTypes";
+
+/**
  * Platform adapter interface.
  *
  * One VSIX ships per vendor (kiro, vscodium). Build-time flags
  * (HAS_KIRO_ADAPTER / HAS_VSCODIUM_ADAPTER) gate which adapter compiles in;
  * esbuild tree-shakes the other.
  */
-
-export interface PlatformAdapter {
-  /** Human-readable IDE name (e.g. "Kiro"). */
-  readonly name: string;
-
+export interface PlatformAdapter extends DownloadAdapter {
   /** Client data folder name (e.g. ".kiro"). */
   readonly dataFolderName: string;
 
@@ -23,18 +37,6 @@ export interface PlatformAdapter {
 
   /** Remote server application name (e.g. "kiro-server"). */
   readonly serverApplicationName: string;
-
-  /**
-   * Build the server download URL for the given commit, OS, and arch.
-   * Used as the fallback when no custom template is configured via
-   * `zygos.serverDownload.template` (mode="custom").
-   */
-  getServerDownloadUrl(
-    commit: string,
-    quality: string,
-    os: string,
-    arch: string,
-  ): string | Promise<string>;
 
   /** Whether the client's argv.json needs patching for proposed APIs. */
   needsArgvPatch(): boolean;
@@ -95,39 +97,7 @@ export interface PlatformAdapter {
 /**
  * Product info read from product.json at runtime, merged with user settings.
  */
-export interface ProductInfo {
-  commit: string;
-  quality: string;
-  version: string;
-  /** Release tag - same as version for VSCodium; commit for Kiro. */
-  release: string;
-  /** product.json productVersion - Qoder server tarball version. */
-  productVersion?: string;
-  /** product.json windsurfVersion - Devin server tarball version. */
-  windsurfVersion?: string;
-  /** product.json ideVersion - Antigravity server tarball version. */
-  ideVersion?: string;
+export interface ProductInfo extends DownloadTemplateInfo {
   serverApplicationName: string;
   serverDataFolderName: string;
-  /**
-   * If set, takes precedence over the adapter's getServerDownloadUrl().
-   * Sourced from `zygos.serverDownload.template` when mode="custom".
-   */
-  serverDownloadUrlTemplate?: string
-  /** Which checksum method to use. */
-  checksumMethod?: "sidecar" | "manifest"
-  /** Checksum algorithm for sidecar verification. If set, sidecar URL
-   * is `resolvedDownloadUrl + "." + algo`. */
-  checksumAlgo?: "sha256" | "md5"
-  /** Full URL template for a JSON manifest. Uses the same variables as
-   * the download URL template. */
-  manifestTemplate?: string
-  /** Field name in the manifest JSON containing the hash. */
-  manifestField?: string
-  /** Whether to verify checksums. Default true. */
-  verifyChecksum: boolean
-  /** Policy when no checksum source is available:
-   * "warn" (proceed with warning), "allow" (proceed silently),
-   * "abort" (block installation). Default "warn". */
-  onNoChecksum: "warn" | "allow" | "abort"
 }

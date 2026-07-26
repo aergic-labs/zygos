@@ -31,14 +31,14 @@
  *   stored in plaintext in the db file. Only the HMAC digest, the
  *   ciphertext, the IV, and the GCM auth tag appear on disk.
  *
- * TTL: 8 hours (configurable via zygos.askpassCacheTtl). Expired entries
+ * TTL: 8 hours (configurable via <ns>.askpassCacheTtl). Expired entries
  * are swept on activate and evicted lazily on read. Key file mtime is
  * tracked (inside the encrypted blob) to detect key rotation. On activate,
  * if the db file's own mtime is older than TTL, the entire file is deleted
  * (cold start after a long absence -> no stale cache). 0 = never expire.
  *
  * Master key rotation: the master key rotates every 7 days (configurable
- * via zygos.askpassKeyRotationDays). On rotation, a new key is generated,
+ * via <ns>.askpassKeyRotationDays). On rotation, a new key is generated,
  * the db is deleted, and the new key is stored in SecretStorage. Entries
  * cannot be re-encrypted because the db key is HMAC(hmacKey, prompt) and
  * prompts are not recoverable from their hashes. The user is re-prompted
@@ -60,19 +60,18 @@ import { Dirty } from "../../vendor/node-dirty/dirty.js";
 
 /** How long a cached secret is valid (ms). 8 hours - roughly a work
  * session. mtime handles key rotation; TTL just bounds stale entries.
- * Overridden by the zygos.askpassCacheTtl setting at init time. */
+ * Overridden by the <ns>.askpassCacheTtl setting at init time. */
 const DEFAULT_TTL_MS = 8 * 60 * 60 * 1000;
 let TTL_MS = DEFAULT_TTL_MS;
 /** How often the master key rotates (ms). 7 days by default.
- * Overridden by the zygos.askpassKeyRotationDays setting at init time.
+ * Overridden by the <ns>.askpassKeyRotationDays setting at init time.
  * 0 = never rotate. */
 const DEFAULT_ROTATION_MS = 7 * 24 * 60 * 60 * 1000;
 let ROTATION_MS = DEFAULT_ROTATION_MS;
-/** SecretStorage key for the 32-byte master key + createdAt timestamp. */
-const MASTERKEY_ID = "zygos.askpass.masterkey";
-/** HKDF info strings for subkey derivation. */
-const HMAC_INFO = Buffer.from("zygos/askpass/hmac");
-const AES_INFO = Buffer.from("zygos/askpass/aes");
+/** HKDF info strings for subkey derivation. Product-agnostic labels -
+ * the master key itself is per-product (passed into initCache). */
+const HMAC_INFO = Buffer.from("aergic/askpass/hmac");
+const AES_INFO = Buffer.from("aergic/askpass/aes");
 
 /** Shape stored in SecretStorage (JSON-encoded). */
 interface MasterKeyRecord {
@@ -144,15 +143,15 @@ export function validatePassphrase(
   keyPath: string,
   passphrase: string,
 ): { valid: boolean; error?: string } {
-  try {
-    if (!fs.existsSync(keyPath)) {
-      return { valid: false, error: `Key file not found: ${keyPath}` };
-    }
+  if (!fs.existsSync(keyPath)) {
+    return { valid: false, error: `Key file not found: ${keyPath}` };
+  }
 
-    const isWin = process.platform === "win32";
-    const envVar = `ZYGOS_ASKPASS_${crypto.randomBytes(8).toString("hex")}`;
-    const nodePath = process.execPath;
-    const dir = secureTempDir();
+  const isWin = process.platform === "win32";
+  const envVar = `AERGIC_ASKPASS_${crypto.randomBytes(8).toString("hex")}`;
+  const nodePath = process.execPath;
+  const dir = secureTempDir();
+  try {
     const jsPath = path.join(dir, "helper.js");
     const wrapperPath = path.join(dir, isWin ? "wrapper.cmd" : "wrapper.sh");
 
@@ -183,10 +182,10 @@ export function validatePassphrase(
       });
       return { valid: true };
     } finally {
-      // secureTempDir is 0o700; rmSync removes the whole dir.
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   } catch (err: unknown) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     const stderr =
       (err as { stderr?: string }).stderr?.trim() ||
       (err instanceof Error ? err.message : String(err));
@@ -200,17 +199,21 @@ export function validatePassphrase(
 
 let instance: PersistentAskpassCache | undefined;
 
-/** Initialize the persistent cache. Call once in activate(). */
+/** Initialize the persistent cache. Call once in activate().
+ * masterKeyId is the SecretStorage key for the master key - per-product
+ * (e.g. "<ns>.askpass.masterkey") so two Aergic products installed
+ * together don't share keys. */
 export async function initCache(
   secrets: vscode.SecretStorage,
   dbPath: string,
   logger: Logger,
+  masterKeyId: string,
   ttlHours?: number,
   rotationDays?: number,
 ): Promise<void> {
   TTL_MS = ttlHours === undefined ? DEFAULT_TTL_MS : ttlHours * 60 * 60 * 1000;
   ROTATION_MS = rotationDays === undefined ? DEFAULT_ROTATION_MS : rotationDays * 24 * 60 * 60 * 1000;
-  instance = new PersistentAskpassCache(secrets, dbPath, logger);
+  instance = new PersistentAskpassCache(secrets, dbPath, logger, masterKeyId);
   await instance.init();
 }
 
@@ -232,9 +235,10 @@ export async function getCached(prompt: string): Promise<string | undefined> {
 export async function setCached(
   prompt: string,
   password: string,
+  skipValidation = false,
 ): Promise<{ stored: boolean; error?: string }> {
   if (!instance) return { stored: false, error: "cache not initialized" };
-  return instance.set(prompt, password);
+  return instance.set(prompt, password, skipValidation);
 }
 
 /** Remove a single entry (e.g. on auth failure). */
@@ -255,25 +259,27 @@ class PersistentAskpassCache {
   private hmacKey: Buffer | undefined;
   private aesKey: Buffer | undefined;
   private db: Dirty<EncryptedEntry> | undefined;
+  private disposed = false;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
     private readonly dbPath: string,
     private readonly logger: Logger,
+    private readonly masterKeyId: string,
   ) {}
 
   async init(): Promise<void> {
     // Load or generate the 32-byte master key from SecretStorage.
     // The key is stored as JSON { key, createdAt } to support rotation.
     // Migrate from the old format (bare base64 string) if needed.
-    const raw = await this.secrets.get(MASTERKEY_ID);
+    const raw = await this.secrets.get(this.masterKeyId);
     let masterKey: Buffer;
     let createdAt: number;
     if (!raw) {
       masterKey = crypto.randomBytes(32);
       createdAt = Date.now();
       await this.secrets.store(
-        MASTERKEY_ID,
+        this.masterKeyId,
         JSON.stringify({ key: masterKey.toString("base64"), createdAt }),
       );
       this.logger.info("[askpass-cache] generated new master key");
@@ -326,6 +332,7 @@ class PersistentAskpassCache {
 
     // Open the dirty db.
     await this.openDb();
+    if (this.disposed) return;
 
     // Restrict file permissions on Unix.
     if (process.platform !== "win32") {
@@ -337,6 +344,7 @@ class PersistentAskpassCache {
     // Check if the master key needs rotation.
     if (ROTATION_MS > 0 && Date.now() - createdAt > ROTATION_MS) {
       await this.rotateMasterKey(masterKey, createdAt);
+      if (this.disposed) return;
     }
 
     // Sweep expired entries from previous sessions.
@@ -346,6 +354,12 @@ class PersistentAskpassCache {
   /** Open (or reopen) the dirty db file and wait for it to load. */
   private async openDb(): Promise<void> {
     this.db = new Dirty(this.dbPath) as Dirty<EncryptedEntry>;
+    // Permanent error listener: node-dirty emits 'error' on background
+    // flush failures after load, and an EventEmitter with no 'error'
+    // listener throws synchronously, killing the extension host.
+    this.db.on("error", (err: Error) => {
+      this.logger.error(`[askpass-cache] db error: ${err.message}`);
+    });
     await new Promise<void>((resolve, reject) => {
       const onLoad = () => { cleanup(); resolve(); };
       const onError = (err: Error) => { cleanup(); reject(err); };
@@ -390,7 +404,7 @@ class PersistentAskpassCache {
 
     // Store new key in SecretStorage.
     await this.secrets.store(
-      MASTERKEY_ID,
+      this.masterKeyId,
       JSON.stringify({ key: newKey.toString("base64"), createdAt: newCreatedAt }),
     );
 
@@ -399,7 +413,10 @@ class PersistentAskpassCache {
     this.aesKey = Buffer.from(crypto.hkdfSync("sha256", newKey, Buffer.alloc(0), AES_INFO, 32));
 
     // Reopen a fresh db.
-    await this.openDb();
+    await this.openDb().catch((err) => {
+      if (!this.disposed) throw err;
+    });
+    if (this.disposed) return;
     if (process.platform !== "win32") {
       try { fs.chmodSync(this.dbPath, 0o600); } catch { /* best effort */ }
     }
@@ -480,14 +497,15 @@ class PersistentAskpassCache {
   async set(
     prompt: string,
     password: string,
+    skipValidation = false,
   ): Promise<{ stored: boolean; error?: string }> {
     if (!this.hmacKey || !this.aesKey || !this.db) {
       return { stored: false, error: "cache not initialized" };
     }
 
-    // Validate key passphrases before caching.
+    // Validate key passphrases before caching (skip if already validated by caller).
     const keyPath = parseKeyPath(prompt);
-    if (keyPath) {
+    if (keyPath && !skipValidation) {
       const result = validatePassphrase(keyPath, password);
       if (!result.valid) {
         return { stored: false, error: result.error };
@@ -583,6 +601,7 @@ class PersistentAskpassCache {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
     if (this.db) {
       const db = this.db;
       await new Promise<void>((resolve) => {
@@ -591,15 +610,14 @@ class PersistentAskpassCache {
         db.once("write_close", finish);
         db.once("read_close", () => {
           // If there's no write stream, read_close is the only signal.
-          const w = (db as any)._writeStream;
-          if (!w) finish();
+          if (!db._writeStream) finish();
         });
         db.close();
         // If close() completed synchronously (no streams at all), resolve.
-        if (!(db as any)._queue?.size
-          && (db as any)._inFlightWrites <= 0
-          && !(db as any)._readStream
-          && !(db as any)._writeStream) {
+        if (!db._queue?.size
+          && (db._inFlightWrites ?? 0) <= 0
+          && !db._readStream
+          && !db._writeStream) {
           finish();
         }
       });

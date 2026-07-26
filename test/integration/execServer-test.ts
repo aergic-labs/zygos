@@ -10,7 +10,7 @@
  */
 import * as net from "node:net";
 import { SshConnection } from "../../src/ssh/connection";
-import { SshExecServer } from "../../src/server/execServer";
+import { SshExecServer } from "../../src/remote/execServer";
 
 const HOST = "example.com";
 const USER = "user";

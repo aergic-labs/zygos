@@ -11,10 +11,10 @@
  * `chmod`, `mkdir` (all universal POSIX utilities). After that every
  * command runs through the vendored sh with busybox at the front of PATH.
  *
- * Two phases:
- *   1. Probe (raw login shell): printenv HOME, uname -m, test -x
- *   2. Bootstrap (if needed): cat > busybox, chmod, --install -s
- *   3. Post-bootstrap: everything via busybox sh
+ * Phases:
+ *   1. Probe (single call): HOME, arch, busybox present, install present.
+ *   2. Bootstrap (if needed, single call): stream binary + mkdir/chmod/install.
+ *   3. Post-bootstrap: everything via busybox sh.
  *
  * Install location: $HOME/.ssh-remote/bin/ (persists across reboots,
  * avoids /tmp noexec).
@@ -82,13 +82,70 @@ export async function bbExecWithStdin(
   return conn.execWithStdin(`${sh} -c ${shellQuote(wrapped)}`, stdin);
 }
 
-// --- Probe phase (raw login shell, minimal assumptions) ---
+// --- Probe phase (single call, raw login shell) ---
 
-/** Detect $HOME on the remote. Falls back to /tmp if unset (broken box). */
+export interface RemoteProbe {
+  home: string;
+  arch: string;
+  busyboxPresent: boolean;
+  installPresent: boolean;
+}
+
+/**
+ * Single-call probe: HOME, arch, busybox presence, and whether the server
+ * is already installed for the given commit. Replaces the prior 2-4 call
+ * sequence (probeHome + probeArch + isBootstrapped + check install).
+ *
+ * Output format: four ::: -delimited fields on one line. Avoids JSON
+ * escaping issues with unusual home directory paths.
+ */
+export async function probeRemote(
+  conn: SshConnection,
+  serverDataFolderName: string,
+  commit: string,
+): Promise<RemoteProbe> {
+  const cmd =
+    `h=$(printenv HOME); ` +
+    `a=$(uname -m); ` +
+    `b=no; [ -x "$h/${REMOTE_DIR_NAME}/bin/sh" ] && b=yes; ` +
+    `i=no; [ -f "$h/${serverDataFolderName}/bin/${commit}/node" ] && i=yes; ` +
+    `printf '%s:::%s:::%s:::%s\\n' "$h" "$a" "$b" "$i"`;
+
+  const result = await conn.exec(cmd);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Remote probe failed (exit ${result.exitCode}): ${result.stderr || result.stdout.slice(0, 200)}`,
+    );
+  }
+
+  const parts = result.stdout.trim().split(":::");
+  if (parts.length < 4) {
+    throw new Error(
+      `Remote probe: malformed output (expected 4 fields, got ${parts.length}): ${result.stdout.slice(0, 200)}`,
+    );
+  }
+
+  const home = parts[0].trim();
+  if (!home) {
+    throw new Error("Remote HOME is empty; refusing to install into /tmp");
+  }
+
+  return {
+    home,
+    arch: normalizeArch(parts[1].trim()),
+    busyboxPresent: parts[2].trim() === "yes",
+    installPresent: parts[3].trim() === "yes",
+  };
+}
+
+/** Detect $HOME on the remote. Throws if unset (security: /tmp is shared). */
 export async function probeHome(conn: SshConnection): Promise<string> {
   const result = await conn.exec("printenv HOME");
   const home = result.stdout.trim();
-  return home || "/tmp";
+  if (!home) {
+    throw new Error("Remote HOME is empty; refusing to install into /tmp");
+  }
+  return home;
 }
 
 /** Detect architecture via uname -m. Maps to x64/arm64. */
@@ -127,9 +184,14 @@ export async function isBootstrapped(
 // --- Bootstrap phase (cat, chmod, mkdir only) ---
 
 /**
- * Install the vendored busybox on the remote. Uses only cat (write binary
- * via stdin), chmod (make executable), and busybox's own --install -s to
- * create symlinks for all applets (sh, tar, gzip, mkdir, test, etc.).
+ * Install the vendored busybox on the remote in a single SSH call.
+ *
+ * The binary is streamed over stdin; `cat > bbPath` reads it, then the
+ * && chain runs chmod, verify (catches noexec/corruption), and --install -s
+ * (creates symlinks for all applets: sh, tar, gzip, mkdir, test, etc.).
+ *
+ * Prior implementation used 5 separate calls (mkdir, cat, chmod, verify,
+ * install). Collapsing to 1 saves 4 SSH handshakes per first-connect.
  */
 export async function bootstrapBusybox(
   conn: SshConnection,
@@ -141,52 +203,22 @@ export async function bootstrapBusybox(
   const toolsDir = remoteToolsDir(home);
   const bbPath = remoteBusyboxPath(home);
 
-  // Read the local binary.
   const localPath = localBusyboxPath(extensionPath, arch);
   const busyboxBuf = fs.readFileSync(localPath);
   logger.info(`[busybox] read ${busyboxBuf.length} bytes from ${localPath}`);
 
-  // 1. mkdir -p the tools dir (mkdir is universal).
-  logger.info(`[busybox] mkdir -p ${toolsDir}...`);
-  const mkdirResult = await conn.exec(`mkdir -p ${shellQuote(toolsDir)}`);
-  if (mkdirResult.exitCode !== 0) {
-    throw new Error(`Failed to create ${toolsDir}: ${mkdirResult.stderr}`);
-  }
+  const cmd =
+    `mkdir -p ${shellQuote(toolsDir)} && ` +
+    `cat > ${shellQuote(bbPath)} && ` +
+    `chmod +x ${shellQuote(bbPath)} && ` +
+    `${shellQuote(bbPath)} true && ` +
+    `${shellQuote(bbPath)} --install -s ${shellQuote(toolsDir)}`;
 
-  // 2. Write the binary via cat (cat is universal).
-  logger.info(`[busybox] writing busybox binary via cat...`);
-  const writeResult = await conn.execWithStdin(
-    `cat > ${shellQuote(bbPath)}`,
-    busyboxBuf,
-  );
-  if (writeResult.exitCode !== 0) {
-    throw new Error(`Failed to write busybox: ${writeResult.stderr}`);
-  }
-
-  // 3. chmod +x (chmod is universal).
-  logger.info(`[busybox] chmod +x...`);
-  const chmodResult = await conn.exec(`chmod +x ${shellQuote(bbPath)}`);
-  if (chmodResult.exitCode !== 0) {
-    throw new Error(`Failed to chmod busybox: ${chmodResult.stderr}`);
-  }
-
-  // 4. Verify it runs (catches /tmp noexec, corrupted binary, etc.).
-  const verifyResult = await conn.exec(`${shellQuote(bbPath)} true`);
-  if (verifyResult.exitCode !== 0) {
+  logger.info(`[busybox] streaming binary + bootstrap in one call...`);
+  const result = await conn.execWithStdin(cmd, busyboxBuf);
+  if (result.exitCode !== 0) {
     throw new Error(
-      `Busybox binary won't execute at ${bbPath} - check for noexec mount ` +
-        `(exit ${verifyResult.exitCode}): ${verifyResult.stderr}`,
-    );
-  }
-
-  // 5. Install all applets as symlinks.
-  logger.info(`[busybox] installing applets to ${toolsDir}...`);
-  const installResult = await conn.exec(
-    `${shellQuote(bbPath)} --install -s ${shellQuote(toolsDir)}`,
-  );
-  if (installResult.exitCode !== 0) {
-    throw new Error(
-      `Failed to install busybox applets: ${installResult.stderr}`,
+      `Bootstrap failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
     );
   }
 

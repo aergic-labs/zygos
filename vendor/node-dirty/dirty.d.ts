@@ -25,6 +25,13 @@ export class Dirty<T = any> extends EventEmitter {
   size(): number;
   close(): void;
 
+  // Internal fields accessed during shutdown probes. Not part of the
+  // public API but typed here so callers don't need `any` casts.
+  _writeStream?: { writable: boolean } | null;
+  _readStream?: { readable: boolean } | null;
+  _queue?: { size: number };
+  _inFlightWrites?: number;
+
   on<K extends keyof DirtyEvents>(event: K, listener: DirtyEvents[K]): this;
   once<K extends keyof DirtyEvents>(event: K, listener: DirtyEvents[K]): this;
   off<K extends keyof DirtyEvents>(event: K, listener: DirtyEvents[K]): this;

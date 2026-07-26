@@ -21,11 +21,11 @@ describe("secureTempDir", () => {
     }
   });
 
-  it("names the dir with the zygos- prefix and 32 hex chars", () => {
+  it("names the dir with the aergic- prefix and 32 hex chars", () => {
     const dir = secureTempDir();
     try {
       const name = path.basename(dir);
-      expect(name).toMatch(/^zygos-[0-9a-f]{32}$/);
+      expect(name).toMatch(/^aergic-[0-9a-f]{32}$/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

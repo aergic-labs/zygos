@@ -12,7 +12,8 @@ import {
   probeHome,
   probeArch,
   isBootstrapped,
-} from "../../src/server/busybox";
+  probeRemote,
+} from "../../src/remote/busybox";
 import { FakeSshConnection, ok, fail, noopLogger } from "../__mocks__/fakeSshConnection";
 
 let tmpDir: string;
@@ -25,6 +26,68 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+describe("probeRemote", () => {
+  it("returns home, arch, busybox, and install status in one call", async () => {
+    const conn = new FakeSshConnection();
+    // Output: home:::arch:::busybox:::installed
+    conn.setResponse(
+      "printenv",
+      ok("/home/user:::x86_64:::yes:::no"),
+    );
+    conn.setDefault(ok());
+
+    const result = await probeRemote(conn as any, ".test-server", "abc123");
+
+    expect(result.home).toBe("/home/user");
+    expect(result.arch).toBe("x64");
+    expect(result.busyboxPresent).toBe(true);
+    expect(result.installPresent).toBe(false);
+  });
+
+  it("throws when HOME is empty", async () => {
+    const conn = new FakeSshConnection();
+    conn.setResponse("printenv", ok(":::x86_64:::no:::no"));
+    conn.setDefault(ok());
+
+    await expect(
+      probeRemote(conn as any, ".test-server", "abc123"),
+    ).rejects.toThrow(/HOME is empty/);
+  });
+
+  it("throws on unsupported arch", async () => {
+    const conn = new FakeSshConnection();
+    conn.setResponse("printenv", ok("/home/user:::mips:::no:::no"));
+    conn.setDefault(ok());
+
+    await expect(
+      probeRemote(conn as any, ".test-server", "abc123"),
+    ).rejects.toThrow("Unsupported");
+  });
+
+  it("throws on malformed output", async () => {
+    const conn = new FakeSshConnection();
+    conn.setResponse("printenv", ok("garbage"));
+    conn.setDefault(ok());
+
+    await expect(
+      probeRemote(conn as any, ".test-server", "abc123"),
+    ).rejects.toThrow("malformed");
+  });
+
+  it("reports installPresent=true when node exists", async () => {
+    const conn = new FakeSshConnection();
+    conn.setResponse(
+      "printenv",
+      ok("/home/user:::aarch64:::yes:::yes"),
+    );
+    conn.setDefault(ok());
+
+    const result = await probeRemote(conn as any, ".test-server", "abc123");
+    expect(result.installPresent).toBe(true);
+    expect(result.arch).toBe("arm64");
+  });
+});
+
 describe("probeHome", () => {
   it("returns HOME from printenv", async () => {
     const conn = new FakeSshConnection();
@@ -33,11 +96,10 @@ describe("probeHome", () => {
     expect(home).toBe("/home/user");
   });
 
-  it("falls back to /tmp when HOME is empty", async () => {
+  it("throws when HOME is empty", async () => {
     const conn = new FakeSshConnection();
     conn.setResponse("printenv", ok(""));
-    const home = await probeHome(conn as any);
-    expect(home).toBe("/tmp");
+    await expect(probeHome(conn as any)).rejects.toThrow(/HOME is empty/);
   });
 });
 
@@ -86,7 +148,7 @@ describe("isBootstrapped", () => {
 });
 
 describe("bootstrapBusybox", () => {
-  it("reads local binary and streams it to remote", async () => {
+  it("reads local binary and streams it to remote in one call", async () => {
     // Create a fake busybox binary
     const busyboxDir = path.join(tmpDir, "tools", "busybox");
     fs.mkdirSync(busyboxDir, { recursive: true });
@@ -95,7 +157,7 @@ describe("bootstrapBusybox", () => {
 
     const conn = new FakeSshConnection();
     await conn.connect();
-    // All commands succeed
+    // Single call: mkdir && cat && chmod && verify && --install
     conn.setDefault(ok());
 
     await bootstrapBusybox(
@@ -106,26 +168,28 @@ describe("bootstrapBusybox", () => {
       noopLogger as any,
     );
 
-    // Should have called mkdir, cat, chmod, verify, --install
-    expect(conn.calls.some((c) => c.includes("mkdir -p"))).toBe(true);
-    expect(conn.calls.some((c) => c.includes("cat >"))).toBe(true);
-    expect(conn.calls.some((c) => c.includes("chmod +x"))).toBe(true);
-    expect(conn.calls.some((c) => c.includes("--install"))).toBe(true);
+    // One call containing all steps.
+    expect(conn.calls).toHaveLength(1);
+    const cmd = conn.calls[0];
+    expect(cmd).toContain("mkdir -p");
+    expect(cmd).toContain("cat >");
+    expect(cmd).toContain("chmod +x");
+    expect(cmd).toContain("--install");
 
-    // cat > should have received the binary content via stdin
-    const catStdin = Array.from(conn.stdinData.values()).find((b) =>
+    // Binary content should have been sent via stdin.
+    const stdin = Array.from(conn.stdinData.values()).find((b) =>
       b.toString().includes("fake-busybox-content"),
     );
-    expect(catStdin).toBeDefined();
+    expect(stdin).toBeDefined();
   });
 
-  it("throws when mkdir fails", async () => {
+  it("throws when the bootstrap command fails", async () => {
     const busyboxDir = path.join(tmpDir, "tools", "busybox");
     fs.mkdirSync(busyboxDir, { recursive: true });
     fs.writeFileSync(path.join(busyboxDir, "bb-x64"), Buffer.from("x"));
 
     const conn = new FakeSshConnection();
-    conn.setResponse("mkdir", fail("permission denied"));
+    conn.setDefault(fail("permission denied"));
 
     await expect(
       bootstrapBusybox(
@@ -135,69 +199,6 @@ describe("bootstrapBusybox", () => {
         tmpDir,
         noopLogger as any,
       ),
-    ).rejects.toThrow("Failed to create");
-  });
-
-  it("throws when cat write fails", async () => {
-    const busyboxDir = path.join(tmpDir, "tools", "busybox");
-    fs.mkdirSync(busyboxDir, { recursive: true });
-    fs.writeFileSync(path.join(busyboxDir, "bb-x64"), Buffer.from("x"));
-
-    const conn = new FakeSshConnection();
-    conn.setResponse("mkdir", ok());
-    conn.setResponse("cat", fail("disk full"));
-
-    await expect(
-      bootstrapBusybox(
-        conn as any,
-        "/home/user",
-        "x64",
-        tmpDir,
-        noopLogger as any,
-      ),
-    ).rejects.toThrow("Failed to write busybox");
-  });
-
-  it("throws when chmod fails", async () => {
-    const busyboxDir = path.join(tmpDir, "tools", "busybox");
-    fs.mkdirSync(busyboxDir, { recursive: true });
-    fs.writeFileSync(path.join(busyboxDir, "bb-x64"), Buffer.from("x"));
-
-    const conn = new FakeSshConnection();
-    conn.setResponse("mkdir", ok());
-    conn.setResponse("cat", ok());
-    conn.setResponse("chmod", fail("not permitted"));
-
-    await expect(
-      bootstrapBusybox(
-        conn as any,
-        "/home/user",
-        "x64",
-        tmpDir,
-        noopLogger as any,
-      ),
-    ).rejects.toThrow("Failed to chmod");
-  });
-
-  it("throws when verify (busybox true) fails", async () => {
-    const busyboxDir = path.join(tmpDir, "tools", "busybox");
-    fs.mkdirSync(busyboxDir, { recursive: true });
-    fs.writeFileSync(path.join(busyboxDir, "bb-x64"), Buffer.from("x"));
-
-    const conn = new FakeSshConnection();
-    conn.setResponse("mkdir", ok());
-    conn.setResponse("cat", ok());
-    conn.setResponse("chmod", ok());
-    conn.setResponse("true", fail("noexec"));
-
-    await expect(
-      bootstrapBusybox(
-        conn as any,
-        "/home/user",
-        "x64",
-        tmpDir,
-        noopLogger as any,
-      ),
-    ).rejects.toThrow("won't execute");
+    ).rejects.toThrow("Bootstrap failed");
   });
 });

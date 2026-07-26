@@ -6,16 +6,53 @@
 import * as vscode from "vscode";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import { detectPlatform, getProductInfo, readProductJson } from "../platform";
-import { buildServerDownloadUrl, resolveTemplateUrl } from "../server/url";
-import { FORK_TEMPLATES } from "../platform/forkTemplates";
-import { resolveNearestVsCodiumVersion } from "../server/vscodiumFeed";
-import type { Logger } from "../common/logger";
+import { buildServerDownloadUrl, resolveTemplateUrl } from "../remote/url";
+import { resolveNearestVsCodiumVersion } from "../remote/vscodiumFeed";
+import type {
+  DownloadTemplateInfo,
+  DownloadAdapter,
+  MinimalLogger,
+} from "../platform/downloadTypes";
+import type { ForkTemplate } from "../platform/forkTemplates";
+
+/**
+ * Dependencies injected by the host extension. Keeps this file portable
+ * across sibling projects (e.g. artizo) without hardcoding the config
+ * namespace, command id, or platform-detection functions.
+ */
+export interface ConfigPanelDeps {
+  /** VS Code config namespace, e.g. "zygos" or "artizo". */
+  configNamespace: string;
+  /** Command ID to register, e.g. "zygos.configureServerDownload". */
+  commandId: string;
+  /** Webview panel title shown to the user. */
+  panelTitle: string;
+  /** Product display name for in-page text, e.g. "Zygos" or "Artizo". */
+  productName: string;
+  /** Webview resource subdir relative to extensionUri, e.g. "resources/serverDownload". */
+  webviewSubdir: string;
+  /** Logger. */
+  logger: MinimalLogger;
+  /** Detect the platform adapter and get product info in one call. */
+  getDownloadInfo: () => Promise<{ adapter: DownloadAdapter; info: DownloadTemplateInfo }> | { adapter: DownloadAdapter; info: DownloadTemplateInfo };
+  /** Read raw product.json from the running IDE's appRoot. */
+  readProductJson: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+  /** Fork templates for the dropdown presets. */
+  forkTemplates: ForkTemplate[];
+}
 
 /** Read the webview HTML and substitute the script/style webview URIs
  * plus a per-panel nonce for CSP. */
-function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
-  const webviewDir = vscode.Uri.joinPath(extensionUri, "resources", "webview");
+function getHtml(
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
+  webviewSubdir: string,
+  productName: string,
+): string {
+  const webviewDir = vscode.Uri.joinPath(
+    extensionUri,
+    ...webviewSubdir.split("/"),
+  );
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(webviewDir, "app.js"),
   );
@@ -28,6 +65,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   html = html.replaceAll("${SCRIPT_URI}", scriptUri.toString());
   html = html.replaceAll("${STYLE_URI}", styleUri.toString());
   html = html.replaceAll("${NONCE}", nonce);
+  html = html.replaceAll("${PRODUCT_NAME}", productName);
   return html;
 }
 
@@ -35,56 +73,81 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
  * Register the config webview command. Must be called before
  * registerResolver so it is available even if activation fails.
  */
-export function registerConfigPanel(
+export function registerServerDownloadPanel(
   context: vscode.ExtensionContext,
-  logger: Logger,
+  deps: ConfigPanelDeps,
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand("zygos.configureServerDownload", () => {
+    vscode.commands.registerCommand(deps.commandId, () => {
       const panel = vscode.window.createWebviewPanel(
-        "zygosConfig",
-        "Zygos Server Download",
+        deps.configNamespace + "Config",
+        deps.panelTitle,
         vscode.ViewColumn.Active,
         {
           enableScripts: true,
           localResourceRoots: [
-            vscode.Uri.joinPath(context.extensionUri, "resources", "webview"),
+            vscode.Uri.joinPath(
+              context.extensionUri,
+              ...deps.webviewSubdir.split("/"),
+            ),
           ],
         },
       );
-      panel.webview.html = getHtml(panel.webview, context.extensionUri);
+      panel.webview.html = getHtml(
+        panel.webview,
+        context.extensionUri,
+        deps.webviewSubdir,
+        deps.productName,
+      );
 
       const os = "linux";
       const arch = process.arch === "arm64" ? "arm64" : "x64";
       let firstState = true;
+      const panelDisposables: vscode.Disposable[] = [];
 
-      void sendState(panel, logger, os, arch, true);
+      void sendState(panel, deps, os, arch, true).catch((err) => {
+        panel.webview.postMessage({
+          type: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
       firstState = false;
 
       panel.webview.onDidReceiveMessage(
         async (msg) => {
+          try {
           switch (msg.type) {
             case "resolveUrl":
-              await handleResolveUrl(panel, logger, msg.template, os, arch);
+              await handleResolveUrl(panel, deps, msg.template, os, arch);
               break;
             case "resolveManifestUrl":
-              await handleResolveManifestUrl(panel, logger, msg.template, os, arch);
+              await handleResolveManifestUrl(panel, deps, msg.template, os, arch);
               break;
             case "testUrl":
-              await handleTestUrl(panel, logger, msg.url, msg.which);
+              await handleTestUrl(panel, deps, msg.url, msg.which);
               break;
             case "apply":
-              await handleApply(panel, logger, msg);
+              await handleApply(panel, deps, msg);
               break;
             case "getState":
-              await sendState(panel, logger, os, arch, firstState);
+              await sendState(panel, deps, os, arch, firstState);
               firstState = false;
               break;
           }
+          } catch (err) {
+            panel.webview.postMessage({
+              type: "error",
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
         },
         undefined,
-        context.subscriptions,
+        panelDisposables,
       );
+
+      panel.onDidDispose(() => {
+        for (const d of panelDisposables) d.dispose();
+      });
     }),
   );
 }
@@ -100,7 +163,7 @@ interface PanelState {
   currentTemplate: string | undefined;
   resolvedUrl: string | undefined;
   binaryName: string | undefined;
-  forkTemplates: typeof FORK_TEMPLATES;
+  forkTemplates: ForkTemplate[];
   variables: VariableValue[];
   cdnVersionAsync: boolean;
   nearestVsCodiumVersionAsync: boolean;
@@ -114,9 +177,10 @@ interface PanelState {
 
 /** Build the variable table: only non-empty values are included. */
 async function buildVariables(
-  info: ReturnType<typeof getProductInfo>,
+  info: DownloadTemplateInfo,
   os: string,
   arch: string,
+  deps: ConfigPanelDeps,
 ): Promise<VariableValue[]> {
   const entries: { name: string; value: string | undefined }[] = [
     { name: "commit", value: info.commit },
@@ -135,7 +199,7 @@ async function buildVariables(
   // version source (windsurfVersion, ideVersion, etc.).
   let appName = "";
   try {
-    appName = String(readProductJson().applicationName ?? "");
+    appName = String((await deps.readProductJson()).applicationName ?? "");
   } catch {
     // ignore - empty name means the variable stays hidden
   }
@@ -155,14 +219,13 @@ async function buildVariables(
 
 async function sendState(
   panel: vscode.WebviewPanel,
-  logger: Logger,
+  deps: ConfigPanelDeps,
   os: string,
   arch: string,
   isFirst: boolean,
 ): Promise<void> {
-  const platform = detectPlatform();
-  const info = getProductInfo(platform);
-  const config = vscode.workspace.getConfiguration("zygos");
+  const { adapter: platform, info } = await deps.getDownloadInfo();
+  const config = vscode.workspace.getConfiguration(deps.configNamespace);
   const sd = config.get<Record<string, string>>("serverDownload", {});
   const downloadMode = sd.mode || "auto";
   const binaryName = typeof sd.binaryName === "string" ? sd.binaryName : "";
@@ -172,14 +235,14 @@ async function sendState(
     ? sd.template.trim()
     : undefined;
 
-  logger.info(`[configPanel] sendState isFirst=${isFirst} downloadMode=${downloadMode} currentTemplate=${JSON.stringify(savedTemplate?.slice(0, 80))} binaryName=${JSON.stringify(binaryName)}`);
+  deps.logger.info(`[configPanel] sendState isFirst=${isFirst} downloadMode=${downloadMode} currentTemplate=${JSON.stringify(savedTemplate?.slice(0, 80))} binaryName=${JSON.stringify(binaryName)}`);
 
   let resolvedUrl: string | undefined;
   try {
     resolvedUrl = await buildServerDownloadUrl(info, platform, os, arch);
-    logger.info(`[configPanel] sendState resolvedUrl=${resolvedUrl}`);
+    deps.logger.info(`[configPanel] sendState resolvedUrl=${resolvedUrl}`);
   } catch (err) {
-    logger.error(`[configPanel] sendState failed to resolve URL: ${err}`);
+    deps.logger.error(`[configPanel] sendState failed to resolve URL: ${err}`);
   }
 
   const state: PanelState = {
@@ -188,8 +251,8 @@ async function sendState(
     currentTemplate: savedTemplate,
     resolvedUrl,
     binaryName,
-    forkTemplates: FORK_TEMPLATES,
-    variables: await buildVariables(info, os, arch),
+    forkTemplates: deps.forkTemplates,
+    variables: await buildVariables(info, os, arch, deps),
     cdnVersionAsync: false,
     nearestVsCodiumVersionAsync: false,
     checksumMethod: info.checksumMethod ?? "sidecar",
@@ -205,7 +268,7 @@ async function sendState(
 
 async function handleResolveUrl(
   panel: vscode.WebviewPanel,
-  logger: Logger,
+  deps: ConfigPanelDeps,
   template: string,
   os: string,
   arch: string,
@@ -213,8 +276,7 @@ async function handleResolveUrl(
   if (!template || !template.trim()) {
     // Auto mode: resolve via the adapter.
     try {
-      const platform = detectPlatform();
-      const info = getProductInfo(platform);
+      const { adapter: platform, info } = await deps.getDownloadInfo();
       const url = await buildServerDownloadUrl(info, platform, os, arch);
       await panel.webview.postMessage({ type: "resolvedUrl", url });
     } catch (err) {
@@ -227,8 +289,7 @@ async function handleResolveUrl(
   }
 
   try {
-    const platform = detectPlatform();
-    const info = getProductInfo(platform);
+    const { info } = await deps.getDownloadInfo();
     const { url, unresolved } = await resolveTemplateUrl(
       template,
       info,
@@ -247,7 +308,7 @@ async function handleResolveUrl(
       nearestVsCodiumVersionAsync,
     });
   } catch (err) {
-    logger.error(`[configPanel] template resolve failed: ${err}`);
+    deps.logger.error(`[configPanel] template resolve failed: ${err}`);
     await panel.webview.postMessage({
       type: "resolvedUrl",
       error: err instanceof Error ? err.message : String(err),
@@ -257,7 +318,7 @@ async function handleResolveUrl(
 
 async function handleResolveManifestUrl(
   panel: vscode.WebviewPanel,
-  logger: Logger,
+  deps: ConfigPanelDeps,
   template: string,
   os: string,
   arch: string,
@@ -271,8 +332,7 @@ async function handleResolveManifestUrl(
   }
 
   try {
-    const platform = detectPlatform();
-    const info = getProductInfo(platform);
+    const { info } = await deps.getDownloadInfo();
     const { url, unresolved } = await resolveTemplateUrl(
       template,
       info,
@@ -285,7 +345,7 @@ async function handleResolveManifestUrl(
       unresolved,
     });
   } catch (err) {
-    logger.error(`[configPanel] manifest template resolve failed: ${err}`);
+    deps.logger.error(`[configPanel] manifest template resolve failed: ${err}`);
     await panel.webview.postMessage({
       type: "resolvedManifestUrl",
       error: err instanceof Error ? err.message : String(err),
@@ -316,6 +376,7 @@ function validateFetchUrl(raw: string): URL | string {
   }
   const host = url.hostname.toLowerCase();
   // Reject loopback, private, link-local, and cloud metadata endpoints.
+  // Also reject non-dotted IP forms (decimal, hex) that bypass the regex.
   const blocked =
     host === "localhost" ||
     host === "metadata.google.internal" ||
@@ -326,7 +387,9 @@ function validateFetchUrl(raw: string): URL | string {
     /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) ||
     /^::1$/.test(host) ||
     /^fe[89ab][0-9a-f]:/i.test(host) ||
-    /^\[::1\]$/.test(host);
+    /^\[::1\]$/.test(host) ||
+    /^0x[0-9a-f]+$/i.test(host) ||
+    /^\d+$/.test(host);
   if (blocked) {
     return "Private/loopback hosts are not allowed";
   }
@@ -335,11 +398,11 @@ function validateFetchUrl(raw: string): URL | string {
 
 async function handleTestUrl(
   panel: vscode.WebviewPanel,
-  logger: Logger,
+  deps: ConfigPanelDeps,
   url: string,
   which: string,
 ): Promise<void> {
-  logger.info(`[configPanel] testing URL: ${url}`);
+  deps.logger.info(`[configPanel] testing URL: ${url}`);
 
   const result: TestResult = { ok: false };
 
@@ -410,17 +473,17 @@ interface ApplyMsg {
 
 async function handleApply(
   panel: vscode.WebviewPanel,
-  logger: Logger,
+  deps: ConfigPanelDeps,
   msg: ApplyMsg,
 ): Promise<void> {
-  logger.info(`[configPanel] handleApply template=${JSON.stringify(msg.template?.slice(0, 80))} binaryName=${JSON.stringify(msg.binaryName)} which=${msg.which}`);
+  deps.logger.info(`[configPanel] handleApply template=${JSON.stringify(msg.template?.slice(0, 80))} binaryName=${JSON.stringify(msg.binaryName)} which=${msg.which}`);
   try {
-    await writeSettingsDirect(msg, logger);
-    logger.info("[configPanel] settings applied");
+    await writeSettingsDirect(msg, deps);
+    deps.logger.info("[configPanel] settings applied");
     await panel.webview.postMessage({ type: "applied", which: msg.which });
   } catch (err) {
     const msg2 = err instanceof Error ? err.message : String(err);
-    logger.error(`[configPanel] apply failed: ${msg2}`);
+    deps.logger.error(`[configPanel] apply failed: ${msg2}`);
     await panel.webview.postMessage({
       type: "applyError",
       error: msg2,
@@ -432,8 +495,11 @@ async function handleApply(
 /**
  * Apply settings via the VS Code config API as a single object write.
  */
-async function writeSettingsDirect(msg: ApplyMsg, logger: Logger): Promise<void> {
-  const config = vscode.workspace.getConfiguration("zygos");
+async function writeSettingsDirect(
+  msg: ApplyMsg,
+  deps: ConfigPanelDeps,
+): Promise<void> {
+  const config = vscode.workspace.getConfiguration(deps.configNamespace);
   const modeVal = msg.mode || "auto";
 
   // Custom mode saves the template; auto mode discards it so switching
@@ -461,7 +527,7 @@ async function writeSettingsDirect(msg: ApplyMsg, logger: Logger): Promise<void>
     onNoChecksum,
   };
 
-  logger.info(`[configPanel] writeSettingsDirect sd=${JSON.stringify(sd)}`);
+  deps.logger.info(`[configPanel] writeSettingsDirect sd=${JSON.stringify(sd)}`);
 
   await config.update(
     "serverDownload",
@@ -471,7 +537,7 @@ async function writeSettingsDirect(msg: ApplyMsg, logger: Logger): Promise<void>
 
   // Verify the write.
   const verify = config.get<Record<string, string>>("serverDownload", {});
-  logger.info(`[configPanel] verify: serverDownload=${JSON.stringify(verify)}`);
+  deps.logger.info(`[configPanel] verify: serverDownload=${JSON.stringify(verify)}`);
 
-  logger.info("[configPanel] settings applied via config API");
+  deps.logger.info("[configPanel] settings applied via config API");
 }

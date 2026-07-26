@@ -38,7 +38,7 @@ export default tseslint.config(
     // Browser-side webview code; runs in the webview, not Node. Uses DOM
     // globals and the VS Code webview API; not part of the bundle's TS
     // strictness.
-    files: ["resources/webview/**"],
+    files: ["resources/serverDownload/**"],
     languageOptions: {
       globals: {
         document: "readonly",

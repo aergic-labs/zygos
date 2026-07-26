@@ -7,15 +7,16 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as vscode from "vscode";
-import { detectPlatform } from "./platform";
+import { detectPlatform, getProductInfo, readProductJson } from "./platform";
 import { Logger } from "./common/logger";
-import { checkForConflicts, showConflictInfo } from "./builtin-disable";
+import { checkForConflicts, showConflictInfo, findConflictingExtensions } from "./builtin-disable";
 import { checkArgvAndPromptRestart } from "./platform/argv";
 import { registerHostCommands } from "./host";
 import { registerResolver } from "./resolver";
-import { registerConfigPanel } from "./webview/configPanel";
+import { registerServerDownloadPanel } from "./webviews/serverDownloadPanel";
+import { FORK_TEMPLATES } from "./platform/forkTemplates";
 import { initCache, disposeCache } from "./ssh/askpassCache";
-import { initVscodiumFeed } from "./server/vscodiumFeed";
+import { initVscodiumFeed } from "./remote/vscodiumFeed";
 
 // Build-time flag determines the published extension name.
 declare const HAS_KIRO_ADAPTER: boolean;
@@ -26,6 +27,7 @@ export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   const logger = new Logger("Zygos");
+  context.subscriptions.push(logger);
   const platform = detectPlatform();
 
   // Bail if this extension was loaded into the wrong editor.
@@ -33,7 +35,7 @@ export async function activate(
   if (!platform.isValidRuntime()) {
     const message = HAS_KIRO_ADAPTER
       ? "Zygos: this build runs in Kiro only. Install the zygos build matching your editor."
-      : "";
+      : "Zygos: this extension is not compatible with your editor. Install the build matching your editor.";
     logger.error(message);
     void vscode.window.showErrorMessage(message);
     return;
@@ -41,8 +43,34 @@ export async function activate(
 
   logger.info(`Activating on ${platform.name} (build ${__BUILD_ID__})`);
 
+  // Register the host tree view synchronously before any async work.
+  // VS Code restores view state early in window init; if createTreeView
+  // hasn't run yet when it tries, it shows "No view is registered with
+  // id: zygos.hosts". The host commands only make sense on the apex host
+  // (no remote) or when connected via ssh-remote. The view is declared
+  // with remoteName: "ssh-remote" so VS Code won't try to show it inside
+  // a devcontainer.
+  const isHostContext =
+    !vscode.env.remoteName || vscode.env.remoteName === "ssh-remote";
+  if (isHostContext) {
+    registerHostCommands(context, logger);
+  }
+
   // Config webview - available in all builds.
-  registerConfigPanel(context, logger);
+  registerServerDownloadPanel(context, {
+    configNamespace: "zygos",
+    commandId: "zygos.configureServerDownload",
+    panelTitle: "Zygos Server Download",
+    productName: "Zygos",
+    webviewSubdir: "resources/serverDownload",
+    logger,
+    getDownloadInfo: () => {
+      const adapter = detectPlatform();
+      return { adapter, info: getProductInfo(adapter) };
+    },
+    readProductJson,
+    forkTemplates: FORK_TEMPLATES,
+  });
 
   // Check for conflicting SSH-remote extensions before anything else.
   // Only on apex - in remote/ssh/devcontainer contexts there is no
@@ -63,7 +91,7 @@ export async function activate(
       // disables the conflicting extension.
       context.subscriptions.push(
         vscode.extensions.onDidChange(async () => {
-          const ids = await checkForConflicts(platform, logger);
+          const ids = findConflictingExtensions(platform, logger);
           if (ids.length === 0) {
             logger.info("[conflict] resolved, reloading...");
             void vscode.commands.executeCommand(
@@ -109,6 +137,7 @@ export async function activate(
     context.secrets,
     path.join(storageDir, "askpass.db"),
     logger,
+    "zygos.askpass.masterkey",
     ttlHours,
     rotationDays,
   );
@@ -130,22 +159,6 @@ export async function activate(
     return;
   }
 
-  // The host tree view and connect commands only make sense on the apex
-  // host (no remote) or when connected via ssh-remote. Skip them when
-  // running inside a devcontainer or other remote context - the view is
-  // declared with remoteName: "ssh-remote" and VS Code throws if we try
-  // to create it under a different remote.
-  if (
-    vscode.env.remoteName &&
-    vscode.env.remoteName !== "ssh-remote"
-  ) {
-    logger.info(
-      `[activate] skipping host commands (remote=${vscode.env.remoteName})`,
-    );
-    return;
-  }
-
-  registerHostCommands(context, logger);
   logger.info(`Activated on ${platform.name}`);
 }
 

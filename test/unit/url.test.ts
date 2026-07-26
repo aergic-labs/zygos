@@ -9,39 +9,32 @@ import {
   buildServerDownloadUrl,
   resolveTemplateUrl,
   fetchCdnVersion,
-} from "../../src/server/url";
-import type { PlatformAdapter, ProductInfo } from "../../src/platform/types";
+} from "../../src/remote/url";
+import type { DownloadAdapter, DownloadTemplateInfo } from "../../src/platform/downloadTypes";
 
 // Substitute the feed module so the lazy `require()` inside resolveTemplateUrl
 // resolves under vitest (which does not interop CJS require natively).
 const feedMock = vi.fn<(v: string) => Promise<string>>();
-vi.mock("../../src/server/vscodiumFeed", () => ({
+vi.mock("../../src/remote/vscodiumFeed", () => ({
   resolveNearestVsCodiumVersion: (v: string) => feedMock(v),
 }));
 
-function makeProductInfo(overrides: Partial<ProductInfo> = {}): ProductInfo {
+function makeProductInfo(overrides: Partial<DownloadTemplateInfo> = {}): DownloadTemplateInfo {
   return {
     commit: "abc123",
     quality: "stable",
     version: "1.2.3",
     release: "1.2.3",
-    serverApplicationName: "codium-server",
-    serverDataFolderName: ".vscodium-server",
     verifyChecksum: false,
     onNoChecksum: "warn",
     ...overrides,
   };
 }
 
-const stubAdapter: PlatformAdapter = {
+const stubAdapter: DownloadAdapter = {
   name: "Test",
-  dataFolderName: ".test",
-  serverDataFolderName: ".test-server",
-  serverApplicationName: "test-server",
   getServerDownloadUrl: (commit, _quality, os, arch) =>
     `https://example.com/${commit}/${os}-${arch}.tar.gz`,
-  needsArgvPatch: () => false,
-  isValidRuntime: () => true,
 };
 
 describe("substituteTemplate", () => {
@@ -216,6 +209,21 @@ describe("fetchCdnVersion", () => {
     await expect(
       fetchCdnVersion("https://cdn.test/dir/file.tar.gz"),
     ).rejects.toThrow(/HTTP 404/);
+  });
+
+  it("throws when URL has no slash", async () => {
+    await expect(fetchCdnVersion("noslash")).rejects.toThrow(
+      /Cannot derive CDN version endpoint/,
+    );
+  });
+
+  it("throws when version endpoint returns empty body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("  ", { status: 200 }),
+    );
+    await expect(
+      fetchCdnVersion("https://cdn.test/dir/file.tar.gz"),
+    ).rejects.toThrow(/empty body/);
   });
 });
 

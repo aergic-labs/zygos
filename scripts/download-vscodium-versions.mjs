@@ -41,7 +41,7 @@ function parseVersions(html) {
 async function fetchPage(page) {
   const res = await fetch(RELEASES_URL(page), {
     signal: AbortSignal.timeout(30000),
-    headers: { "User-Agent": "zygos-build" },
+    headers: { "User-Agent": "aergic-download" },
   });
   if (!res.ok) {
     throw new Error(`page ${page}: HTTP ${res.status}`);
@@ -88,7 +88,7 @@ async function main() {
 }
 
 // Same comparator used at runtime; duplicated here so the generator has
-// no runtime dependency. Keep in sync with src/server/vscodiumFeed.ts.
+// no runtime dependency. Keep in sync with src/remote/vscodiumFeed.ts.
 function compareVersionsDesc(a, b) {
   const ax = parseVersion(a);
   const bx = parseVersion(b);

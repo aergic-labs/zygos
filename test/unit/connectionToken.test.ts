@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   writeConnectionTokenFile,
   removeConnectionTokenFile,
-} from "../../src/server/connectionToken";
+} from "../../src/remote/connectionToken";
 import {
   FakeSshConnection,
   ok,

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { SshExecServer } from "../../src/server/execServer";
+import { SshExecServer } from "../../src/remote/execServer";
 import {
   FakeSshConnection,
   ok,

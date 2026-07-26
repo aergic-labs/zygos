@@ -57,6 +57,15 @@ export async function cleanupZombieServer(
   }
 
   const pid = readResult.stdout.trim();
+  if (!/^\d+$/.test(pid)) {
+    logger.info(`[lifecycle] invalid PID file content: ${pid.slice(0, 50)}`);
+    await bbExec(
+      conn,
+      home,
+      `rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}`,
+    );
+    return {};
+  }
   logger.info(`[lifecycle] found PID file: ${pid}`);
 
   // Check if the process is alive.
@@ -124,7 +133,7 @@ export async function cleanupZombieServer(
     const strayPids = strayResult.stdout.trim().split("\n");
     for (const strayPid of strayPids) {
       const p = strayPid.trim();
-      if (p && p !== pid) {
+      if (p && p !== pid && /^\d+$/.test(p)) {
         logger.info(`[lifecycle] killing stray PID ${p}`);
         await bbExec(conn, home, `kill -9 ${p} 2>/dev/null`);
       }
@@ -221,21 +230,17 @@ export async function acquireResolveLock(
   // "dead", which made a live lock look reclaimable and defeated mutual
   // exclusion). Age-based reclaim + atomic mkdir is the correct guarantee.
   logger.info(`[lifecycle] resolve lock exists, checking age`);
-  const age = await bbExec(
+  // Atomic stale reclaim: check age, remove, and mkdir in a single remote
+  // command to avoid the race where two clients both see stale, one removes
+  // the other's fresh lock, and both acquire.
+  const reclaim = await bbExec(
     conn,
     home,
-    `find ${shellQuote(lockDir)} -type d -mmin +${staleMin} 2>/dev/null`,
+    `if find ${shellQuote(lockDir)} -type d -mmin +${staleMin} 2>/dev/null | grep -q .; then rm -rf ${shellQuote(lockDir)} && mkdir ${shellQuote(lockDir)} && echo OK; fi`,
   );
-  if (age.stdout.trim()) {
-    logger.info(
-      `[lifecycle] resolve lock stale (age > ${staleMin}m), reclaiming`,
-    );
-    await bbExec(conn, home, `rm -rf ${shellQuote(lockDir)}`);
-    if (await tryCreate()) {
-      logger.info(`[lifecycle] reclaimed resolve lock`);
-      return true;
-    }
-    return false;
+  if (reclaim.stdout.trim() === "OK") {
+    logger.info(`[lifecycle] reclaimed resolve lock`);
+    return true;
   }
 
   logger.info(`[lifecycle] resolve lock held (not stale)`);

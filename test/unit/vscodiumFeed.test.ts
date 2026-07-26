@@ -13,7 +13,7 @@ import {
   resolveNearestVsCodiumVersion,
   parseVersion,
   compare,
-} from "../../src/server/vscodiumFeed";
+} from "../../src/remote/vscodiumFeed";
 
 let tmpDir: string;
 let bundledPath: string;
@@ -85,7 +85,7 @@ describe("compare", () => {
 
 describe("resolveNearestVsCodiumVersion", () => {
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-feed-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vscodium-feed-"));
     bundledPath = path.join(tmpDir, "bundled.json");
     cachePath = path.join(tmpDir, "cache.json");
   });

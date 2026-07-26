@@ -13,7 +13,7 @@ import {
   acquireResolveLock,
   releaseResolveLock,
   probeServerPid,
-} from "../../src/server/lifecycle";
+} from "../../src/remote/lifecycle";
 
 // --- Helpers ---
 
@@ -211,14 +211,16 @@ describe("acquireResolveLock", () => {
 
   it("reclaims stale lock based on age", async () => {
     const conn = makeFakeConn({});
-    let mkdirCallCount = 0;
     conn.exec = async (command: string) => {
       conn.calls.push(command);
-      if (command.includes("mkdir")) {
-        mkdirCallCount++;
-        return ok(mkdirCallCount === 1 ? "fail" : "ok");
+      // Atomic reclaim: find + rm + mkdir in one command, outputs OK.
+      if (command.includes("find") && command.includes("mkdir")) {
+        return ok("OK");
       }
-      if (command.includes("find")) return ok("stale");
+      // Initial mkdir attempt (fresh lock).
+      if (command.includes("mkdir")) {
+        return ok("fail");
+      }
       return ok();
     };
 

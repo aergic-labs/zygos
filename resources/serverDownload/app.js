@@ -1,4 +1,4 @@
-// Zygos server download config webview.
+// Server download config webview.
 // Communicates with the extension via postMessage. No inline handlers:
 // buttons declare a data-action, a single delegated listener dispatches.
 

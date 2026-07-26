@@ -22,7 +22,7 @@ import type { Logger } from "../common/logger";
 import { getConfigPath } from "../ssh/sshConfig";
 import { encodeAuthority, parseSshDestination } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
-import { buildServerDownloadUrl } from "../server/url";
+import { buildServerDownloadUrl } from "../remote/url";
 import { SshHostTreeProvider, HostItem } from "./treeView";
 
 // Build-time flag gates the testDownloadUrl command to VSCodium builds only
@@ -79,6 +79,9 @@ export function registerHostCommands(
       async (item: HostItem) => {
         if (!item) return;
         const dest = await item.resolveDestination();
+        const sshArgs: string[] = [];
+        if (dest.port) sshArgs.push("-p", String(dest.port));
+        sshArgs.push(dest.user ? `${dest.user}@${dest.host}` : dest.host);
         const label = dest.user
           ? `${dest.user}@${dest.host}${dest.port ? `:${dest.port}` : ""}`
           : dest.host;
@@ -86,7 +89,7 @@ export function registerHostCommands(
         const terminal = vscode.window.createTerminal({
           name: `SSH: ${label}`,
           shellPath: "ssh",
-          shellArgs: [label],
+          shellArgs: sshArgs,
         });
         terminal.show();
       },
@@ -98,6 +101,9 @@ export function registerHostCommands(
       async (item: HostItem) => {
         if (!item) return;
         const dest = await item.resolveDestination();
+        const sshArgs: string[] = [];
+        if (dest.port) sshArgs.push("-p", String(dest.port));
+        const target = dest.user ? `${dest.user}@${dest.host}` : dest.host;
         const label = dest.user
           ? `${dest.user}@${dest.host}${dest.port ? `:${dest.port}` : ""}`
           : dest.host;
@@ -108,7 +114,7 @@ export function registerHostCommands(
         const terminal = vscode.window.createTerminal({
           name: `Server Log: ${label}`,
           shellPath: "ssh",
-          shellArgs: [label, `tail -f ${logPath}`],
+          shellArgs: [...sshArgs, target, `tail -f ${logPath}`],
         });
         terminal.show();
       },

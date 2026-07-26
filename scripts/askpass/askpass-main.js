@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Zygos SSH askpass - Node.js client.
+ * Aergic SSH askpass - Node.js client.
  * Copyright (c) 2026 Aergic Labs, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  *
@@ -58,7 +58,7 @@ let response = "";
 client.on("connect", () => {
   // The token authenticates this client to the extension host. It's passed
   // via env (not argv) so it never appears in the process listing.
-  const token = process.env.ZYGOS_SSH_ASKPASS_TOKEN || "";
+  const token = process.env.AERGIC_SSH_ASKPASS_TOKEN || "";
   const request = JSON.stringify({ request: prompt, token }) + "\n";
   client.write(request);
 });

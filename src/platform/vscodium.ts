@@ -6,7 +6,7 @@
 import * as vscode from "vscode";
 import type { PlatformAdapter } from "./types";
 import { readProductJson } from "./index";
-import { resolveNearestVsCodiumVersion } from "../server/vscodiumFeed";
+import { resolveNearestVsCodiumVersion } from "../remote/vscodiumFeed";
 
 const VSCODIUM_GITHUB_BASE =
   "https://github.com/VSCodium/vscodium/releases/download";

@@ -173,20 +173,19 @@ export class SshConnection {
                 const chunk = stdinData.subarray(offset, end);
                 offset = end;
                 if (!child.stdin.write(chunk)) {
-                  // Buffer full - wait for drain before continuing.
                   child.stdin.once("drain", writeChunk);
                   return;
                 }
               }
-              // All chunks written - close stdin so remote pipe sees EOF.
               child.stdin.end();
               resolve();
             };
             writeChunk();
-            child.stdin.on("error", reject);
+            child.stdin.once("error", reject);
+            child.stdin.once("close", () => resolve());
           });
         };
-        void writeNext();
+        void writeNext().catch(() => {});
       } else {
         child.stdin.end();
       }
@@ -278,7 +277,7 @@ export class SshConnection {
   /**
    * Build the environment for ssh. When askpass is enabled, sets
    * SSH_ASKPASS, DISPLAY (required by OpenSSH to use SSH_ASKPASS), and
-   * the ZYGOS_SSH_ASKPASS_* vars that the askpass scripts read.
+   * the AERGIC_SSH_ASKPASS_* vars that the askpass scripts read.
    */
   private sshEnv(): NodeJS.ProcessEnv {
     if (
@@ -294,10 +293,10 @@ export class SshConnection {
       SSH_ASKPASS: this.askpassScript,
       SSH_ASKPASS_REQUIRE: "force",
       DISPLAY: this.options.host ? "zygos" : ":0", // any non-empty value works
-      ZYGOS_SSH_ASKPASS_HANDLE: this.askpass.handle,
-      ZYGOS_SSH_ASKPASS_TOKEN: this.askpass.token,
-      ZYGOS_SSH_ASKPASS_NODE: this.nodePath,
-      ZYGOS_SSH_ASKPASS_MAIN: this.askpassMain,
+      AERGIC_SSH_ASKPASS_HANDLE: this.askpass.handle,
+      AERGIC_SSH_ASKPASS_TOKEN: this.askpass.token,
+      AERGIC_SSH_ASKPASS_NODE: this.nodePath,
+      AERGIC_SSH_ASKPASS_MAIN: this.askpassMain,
     };
   }
 
