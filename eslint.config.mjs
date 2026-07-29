@@ -22,7 +22,6 @@ const nodeGlobals = {
 export default tseslint.config(
   {
     ignores: [
-      "vendor/**",
       "dist/**",
       "coverage/**",
       "node_modules/**",
@@ -55,6 +54,24 @@ export default tseslint.config(
   {
     files: ["scripts/**", "esbuild.config.mjs"],
     languageOptions: { globals: nodeGlobals },
+  },
+  {
+    // Vendored code: ship as-is, no project lint rules apply.
+    files: ["vendor/**/*"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-empty-object-type": "off",
+      "@typescript-eslint/no-unsafe-function-type": "off",
+      "@typescript-eslint/no-var-requires": "off",
+      "@typescript-eslint/ban-types": "off",
+      "@typescript-eslint/no-unused-expressions": "off",
+      "no-empty-function": "off",
+      "no-unused-vars": "off",
+      "no-undef": "off",
+      "no-empty": "off",
+    },
   },
   {
     files: ["test/**/*.ts"],

@@ -32,12 +32,8 @@ import {
   bbExec,
   bbExecWithStdin,
   shellQuote,
-  normalizeArch,
   probeRemote,
-  type RemoteProbe,
 } from "./busybox";
-
-export type { normalizeArch, RemoteProbe };
 
 export interface InstallResult {
   installPath: string;

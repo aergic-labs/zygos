@@ -8,7 +8,6 @@
     "function": true
   },
   "entry": [
-    "src/extension.ts",
     "src/host/index.ts",
     "src/host/treeView.ts",
     "src/builtin-disable/index.ts",

@@ -44,12 +44,10 @@ import { wrapSocket } from "../net/managedConnection";
 import { SshExecServer } from "../remote/execServer";
 import { AskpassServer } from "../ssh/askpassServer";
 import {
-  cleanupZombieServer,
-  writeServerMetadata,
+  acquireLockAndProbeZombie,
+  finalizeServerStart,
   removeServerMetadata,
-  acquireResolveLock,
   releaseResolveLock,
-  probeServerPid,
 } from "../remote/lifecycle";
 import {
   ConnectionMonitor,
@@ -282,19 +280,17 @@ export class SshRemoteResolver {
       },
     );
 
-    // Acquire a mkdir-based resolve lock: two parallel resolves to the same
-    // install path would race on server start + metadata writes.
-    const locked = await acquireResolveLock(
+    // Acquire the resolve lock and probe for an existing/zombie server in
+    // one round-trip. Two parallel resolves to the same install path would
+    // race on server start + metadata writes.
+    report("Checking for existing server...");
+    const lockProbe = await acquireLockAndProbeZombie(
       conn,
       installResult.home,
       installResult.installPath,
-      this.logger,
     );
-    if (!locked) {
-      this.logger.info(
-        "[resolve] could not acquire resolve lock - another resolve may be running; proceeding without lock",
-      );
-    }
+    this.logger.info(`[lifecycle] ${lockProbe.log}`);
+    const locked = lockProbe.locked;
 
     // Copy the IDE auth token (e.g. Kiro SSO) to avoid making the user sign
     // in again on the remote.
@@ -309,20 +305,12 @@ export class SshRemoteResolver {
     let remotePort: number;
     let serverProcess: ChildProcess | undefined;
 
-    // Check for a zombie or reusable server from another window.
-    report("Checking for existing server...");
-    const zombieResult = await cleanupZombieServer(
-      conn,
-      installResult.home,
-      installResult.installPath,
-      this.logger,
-    );
-    if (zombieResult.reusePort) {
+    if (lockProbe.reusePort) {
       // Existing healthy server from another window - reuse it.
       // Read the existing token from the file; the server validates against
       // the token it was started with, not a new one we generate.
       report("Reusing existing server...");
-      remotePort = zombieResult.reusePort;
+      remotePort = lockProbe.reusePort;
       serverProcess = undefined;
       const existingToken = await readConnectionTokenFile(
         conn,
@@ -348,16 +336,13 @@ export class SshRemoteResolver {
         this.logger.info("[resolve] using existing connection token");
       }
     } else {
-      // Start a new server with a fresh token.
+      // Start a new server with a fresh token. The token is piped to the
+      // server start script via SSH stdin and written to the token file on
+      // the remote before the server starts, keeping it out of `ps`.
       report("Starting server...");
       connectionToken = generateToken();
-      tokenFile = await writeConnectionTokenFile(
-        conn,
-        installResult.home,
-        connectionToken,
-        this.logger,
-        installResult.installPath,
-      );
+      const suffix = `-${path.basename(installResult.installPath)}`;
+      tokenFile = `${installResult.home}/.ssh-remote/conn-token${suffix}`;
       try {
         const started = await this.startServer(
           conn,
@@ -365,6 +350,7 @@ export class SshRemoteResolver {
           installResult.installPath,
           productInfo.serverApplicationName,
           tokenFile,
+          connectionToken,
           isReconnect,
         );
         remotePort = started.port;
@@ -382,31 +368,22 @@ export class SshRemoteResolver {
       }
     }
 
-    // Write PID/port files for a new server (not needed when reusing).
+    // Write PID/port files for a new server, and release the resolve lock,
+    // in one round-trip. Skipped when reusing an existing server.
     let forwardProcess: ChildProcess | undefined;
     let socksPort = 0;
     try {
-    if (!zombieResult.reusePort) {
-      const remotePid = await probeServerPid(
+    if (!lockProbe.reusePort) {
+      const fin = await finalizeServerStart(
         conn,
         installResult.home,
         installResult.installPath,
-        this.logger,
+        remotePort,
+        { releaseLock: locked },
       );
-      if (remotePid !== undefined) {
-        await writeServerMetadata(
-          conn,
-          installResult.home,
-          installResult.installPath,
-          remotePid,
-          remotePort,
-          this.logger,
-        );
-      }
-    }
-
-    // Release the resolve lock once the server is up and metadata is written.
-    if (locked) {
+      this.logger.info(`[lifecycle] ${fin.log}`);
+    } else if (locked) {
+      // Reused an existing server; just release the lock we acquired.
       await releaseResolveLock(
         conn,
         installResult.home,
@@ -450,7 +427,7 @@ export class SshRemoteResolver {
       installPath: installResult.installPath,
       makeConnection: undefined as any, // set below
       connectionToken,
-      ownsServer: !zombieResult.reusePort,
+      ownsServer: !lockProbe.reusePort,
     };
 
     // Attach exit listeners to detect process death immediately, not minutes
@@ -515,11 +492,13 @@ export class SshRemoteResolver {
     installPath: string,
     serverApp: string,
     tokenFile: string,
+    connectionToken: string,
     _isReconnect: boolean,
   ): Promise<{ port: number; process: ChildProcess }> {
     const serverScript = `${installPath}/bin/${serverApp}`;
     const toolsDir = remoteToolsDir(home);
     const sh = remoteShPath(home);
+    const remoteDirName = path.dirname(tokenFile);
 
     // Extensions to install on the remote at server startup.
     const extensionIds = vscode.workspace
@@ -552,13 +531,29 @@ export class SshRemoteResolver {
       .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
       .join("; ");
 
+    // The connection token is piped to the shell via SSH stdin: the shell
+    // reads it with `cat`, writes it to the token file (chmod 600), then
+    // `exec`s the server. The token never appears in the command line (so
+    // it's not visible via `ps`) and never travels in the environment. After
+    // writing the token we close stdin so `cat` gets EOF, writes the file,
+    // and the `exec`'d server inherits a closed stdin (fine for
+    // --start-server).
+    const writeAndStart =
+      `mkdir -p ${shellQuote(remoteDirName)} && umask 077 && cat > ${shellQuote(tokenFile)} && ` +
+      `exec ${startCmd}`;
+
     // Run via busybox sh to put our tools on PATH.
-    const wrapped = `export PATH=${shellQuote(toolsDir)}:$PATH; ${envExports ? envExports + "; " : ""}${startCmd}`;
+    const wrapped = `export PATH=${shellQuote(toolsDir)}:$PATH; ${envExports ? envExports + "; " : ""}${writeAndStart}`;
 
     this.logger.info(`[resolve] starting server: ${startCmd}`);
 
     // Spawn a long-running SSH process that runs the server.
     const child = conn.spawnProcess(`${sh} -c ${shellQuote(wrapped)}`);
+
+    // Write the token to the shell's stdin, then close it so `cat` gets EOF,
+    // writes the file, and `exec` proceeds to start the server.
+    child.stdin?.write(connectionToken, "utf-8");
+    child.stdin?.end();
 
     // Parse the listening port from stdout.
     return new Promise<{ port: number; process: ChildProcess }>(

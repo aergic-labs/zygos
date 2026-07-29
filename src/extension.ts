@@ -17,6 +17,7 @@ import { registerServerDownloadPanel } from "./webviews/serverDownloadPanel";
 import { FORK_TEMPLATES } from "./platform/forkTemplates";
 import { initCache, disposeCache } from "./ssh/askpassCache";
 import { initVscodiumFeed } from "./remote/vscodiumFeed";
+import { configureDownloadCache, maybePruneCache } from "./remote/download";
 
 // Build-time flag determines the published extension name.
 declare const HAS_KIRO_ADAPTER: boolean;
@@ -148,6 +149,19 @@ export async function activate(
     bundledPath: path.join(context.extensionPath, "tools", "vscodium", "versions.json"),
     cachePath: path.join(os.homedir(), ".zygos", "vscodium-versions.json"),
   });
+
+  // On-disk cache for REH tarball downloads. Keyed on the original
+  // (pre-redirect) URL, which encodes commit+arch+binaryName. Permanent
+  // until the 2GB cap prunes oldest entries or the user clears it.
+  const rehCacheDir = path.join(storageDir, "reh-cache");
+  fs.mkdirSync(rehCacheDir, { recursive: true });
+  configureDownloadCache(rehCacheDir, {
+    onCacheStatus: (status, u) =>
+      logger.info(`[download] cache=${status} url=${u}`),
+    onRetry: (cause, u) =>
+      logger.info(`[download] retrying ${u}: ${cause instanceof Error ? cause.message : String(cause)}`),
+  });
+  void maybePruneCache();
 
   // Register the authority resolver.
   try {

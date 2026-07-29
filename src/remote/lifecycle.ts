@@ -26,122 +26,249 @@ import { bbExec, shellQuote } from "./busybox";
  * considered abandoned and reclaimed. */
 const LOCK_STALE_AGE_SEC = 1800;
 
+/** Result of a zombie-server probe. `reusePort` is set when an existing
+ * healthy server was found and should be reused; otherwise undefined and
+ * `log` describes what happened. The caller branches on `reusePort` and
+ * logs `log` verbatim. */
+export interface ZombieResult {
+  /** Remote port to reuse, or undefined to start a fresh server. */
+  reusePort?: number;
+  /** Human-readable context for the caller to log. */
+  log: string;
+}
+
+/** Result of finalizing a fresh server start. `pid` is the remote server's
+ * PID if found; `log` describes what happened. The caller logs `log`. */
+export interface FinalizeResult {
+  /** Remote server PID, or undefined if pgrep found nothing. */
+  pid?: number;
+  /** Human-readable context for the caller to log. */
+  log: string;
+}
+
 /**
  * Check for a zombie server for this install path.
  *
- * Reads the PID and port files. If the PID is alive AND the server is
- * responding on its port, it's not a zombie - it's a healthy server
- * from another window. Returns { reusePort } so the resolver can skip
- * starting a new server and just connect to the existing one.
+ * A single remote script reads the PID and port files, checks liveness,
+ * probes the port, and cleans up if needed. Returns a `ZombieResult`:
+ * `reusePort` is set only when an existing healthy server was found,
+ * otherwise `log` describes what happened (no PID file, dead PID, killed
+ * zombie, etc.).
  *
- * If the PID is dead or the server is not responding, cleans up the
- * files and kills any strays. Returns { reusePort: undefined }.
+ * Collapses what was 4-6 sequential SSH calls into one. The bookkeeping
+ * round-trips (read PID, check alive, read port, probe, cleanup) are all
+ * local to the remote shell; nothing they do requires a client round-trip
+ * in between.
  */
 export async function cleanupZombieServer(
   conn: SshConnection,
   home: string,
   installPath: string,
-  logger: Logger,
-): Promise<{ reusePort?: number }> {
+): Promise<ZombieResult> {
   const pidFile = `${installPath}/.server.pid`;
   const portFile = `${installPath}/.server.port`;
 
-  const readResult = await bbExec(
-    conn,
-    home,
-    `cat ${shellQuote(pidFile)} 2>/dev/null`,
-  );
-  if (readResult.exitCode !== 0 || !readResult.stdout.trim()) {
-    logger.info("[lifecycle] no existing PID file, clean start");
-    return {};
-  }
-
-  const pid = readResult.stdout.trim();
-  if (!/^\d+$/.test(pid)) {
-    logger.info(`[lifecycle] invalid PID file content: ${pid.slice(0, 50)}`);
-    await bbExec(
-      conn,
-      home,
-      `rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}`,
-    );
-    return {};
-  }
-  logger.info(`[lifecycle] found PID file: ${pid}`);
-
-  // Check if the process is alive.
-  const aliveResult = await bbExec(conn, home, `kill -0 ${pid} 2>/dev/null`);
-  if (aliveResult.exitCode !== 0) {
-    logger.info(`[lifecycle] PID ${pid} is dead, cleaning up files`);
-    await bbExec(
-      conn,
-      home,
-      `rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}`,
-    );
-    return {};
-  }
-
-  // Process is alive. Read the port file and probe the server.
-  const portResult = await bbExec(
-    conn,
-    home,
-    `cat ${shellQuote(portFile)} 2>/dev/null`,
-  );
-  if (portResult.exitCode === 0 && portResult.stdout.trim()) {
-    const port = portResult.stdout.trim();
-    logger.info(`[lifecycle] found port file: ${port}, probing server...`);
-    // Probe the port. Try curl first (common on Linux), then busybox wget,
-    // then /dev/tcp as a last resort. Any success means the server is alive.
-    const probeResult = await bbExec(
-      conn,
-      home,
-      `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/version 2>/dev/null || ` +
-        `wget -q -O /dev/null http://127.0.0.1:${port}/version 2>/dev/null || ` +
-        `(echo > /dev/tcp/127.0.0.1/${port}) 2>/dev/null`,
-    );
-    if (probeResult.exitCode === 0) {
-      // Server is alive and responding - reuse it.
-      logger.info(
-        `[lifecycle] server PID ${pid} is alive on port ${port}, reusing`,
-      );
-      return { reusePort: Number(port) };
-    }
-    logger.info(
-      `[lifecycle] PID ${pid} alive but port ${port} not responding, killing`,
-    );
-  }
-
-  // Process is alive but server is not responding - it's a real zombie.
-  logger.info(`[lifecycle] killing zombie server PID ${pid}`);
-  await bbExec(
-    conn,
-    home,
-    `kill ${pid} 2>/dev/null; sleep 1; kill -9 ${pid} 2>/dev/null`,
-  );
-
-  await bbExec(
-    conn,
-    home,
+  // Single sh script: read PID, validate, check alive, probe port,
+  // clean up strays. All in one SSH call.
+  const script = [
+    `pid=$(cat ${shellQuote(pidFile)} 2>/dev/null)`,
+    `if [ -z "$pid" ]; then echo "EMPTY"; exit 0; fi`,
+    `case "$pid" in *[!0-9]*) rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}; echo "INVALID"; exit 0;; esac`,
+    `if ! kill -0 "$pid" 2>/dev/null; then rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}; echo "DEAD:$pid"; exit 0; fi`,
+    `port=$(cat ${shellQuote(portFile)} 2>/dev/null)`,
+    `if [ -n "$port" ]; then`,
+    `  if curl -s -f -o /dev/null http://127.0.0.1:$port/version 2>/dev/null || wget -q -O /dev/null http://127.0.0.1:$port/version 2>/dev/null || (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then`,
+    `    echo "REUSE:$port"; exit 0`,
+    `  fi`,
+    `fi`,
+    `kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null`,
     `rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}`,
-  );
+    `strays="$(pgrep -f ${shellQuote(installPath)} 2>/dev/null)"`,
+    `for p in $strays; do [ "$p" != "$pid" ] && kill -9 $p 2>/dev/null; done`,
+    `echo "ZOMBIE:$pid:$strays"`,
+  ].join("\n");
 
-  const strayResult = await bbExec(
-    conn,
-    home,
-    `pgrep -f ${shellQuote(installPath)} 2>/dev/null`,
-  );
-  if (strayResult.exitCode === 0 && strayResult.stdout.trim()) {
-    const strayPids = strayResult.stdout.trim().split("\n");
-    for (const strayPid of strayPids) {
-      const p = strayPid.trim();
-      if (p && p !== pid && /^\d+$/.test(p)) {
-        logger.info(`[lifecycle] killing stray PID ${p}`);
-        await bbExec(conn, home, `kill -9 ${p} 2>/dev/null`);
-      }
-    }
+  const result = await bbExec(conn, home, script);
+  const out = result.stdout.trim();
+
+  if (out === "EMPTY") return { log: "no existing PID file, clean start" };
+  if (out === "INVALID") return { log: "invalid PID file content, cleaned up" };
+  if (out.startsWith("DEAD:")) {
+    const pid = parseInt(out.slice(5), 10);
+    return Number.isNaN(pid)
+      ? { log: "invalid PID file content, cleaned up" }
+      : { log: `PID ${pid} is dead, cleaned up files` };
   }
+  if (out.startsWith("REUSE:")) {
+    const port = parseInt(out.slice(6), 10);
+    return Number.isNaN(port)
+      ? { log: "could not parse REUSE port, starting fresh" }
+      : { reusePort: port, log: `server alive on port ${port}, reusing` };
+  }
+  if (out.startsWith("ZOMBIE:")) {
+    const rest = out.slice(7);
+    const [pidStr, straysRaw] = rest.split(":", 2);
+    const pid = parseInt(pidStr, 10);
+    if (Number.isNaN(pid)) return { log: "could not parse ZOMBIE pid, cleaned up" };
+    const strays = (straysRaw ?? "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s && s !== String(pid) && /^\d+$/.test(s));
+    const strayMsg = strays.length > 0 ? `, killed strays ${strays.join(", ")}` : "";
+    return { log: `killed zombie PID ${pid}${strayMsg}, cleanup complete` };
+  }
+  return { log: `unexpected cleanup output: ${out}` };
+}
 
-  logger.info("[lifecycle] zombie cleanup complete");
-  return {};
+/**
+ * Probe the remote server PID, write PID/port files, and optionally release
+ * the resolve lock, all in a single SSH call.
+ *
+ * Folds probeServerPid + writeServerMetadata + releaseResolveLock into one
+ * round-trip. Each step is a remote shell op with no dependency on a client
+ * round-trip in between. Returns a `FinalizeResult` with the PID (if found)
+ * and a `log` string.
+ */
+export async function finalizeServerStart(
+  conn: SshConnection,
+  home: string,
+  installPath: string,
+  port: number,
+  opts: { releaseLock: boolean },
+): Promise<FinalizeResult> {
+  const pidFile = `${installPath}/.server.pid`;
+  const portFile = `${installPath}/.server.port`;
+  const lockDir = `${installPath}/.resolve-lock`;
+
+  const lines: string[] = [
+    `pid=$(pgrep -f -o ${shellQuote(`${installPath}/node`)} 2>/dev/null)`,
+    `if [ -z "$pid" ]; then pid=$(pgrep -f -o ${shellQuote(installPath)} 2>/dev/null); fi`,
+    `if [ -n "$pid" ]; then echo $pid > ${shellQuote(pidFile)} && echo ${port} > ${shellQuote(portFile)}; fi`,
+  ];
+  if (opts.releaseLock) {
+    lines.push(`rm -rf ${shellQuote(lockDir)}`);
+  }
+  lines.push(`echo "PID=$pid"`);
+
+  const result = await bbExec(conn, home, lines.join("\n"));
+  const m = result.stdout.match(/PID=(\d+)/);
+  if (m) {
+    const pid = parseInt(m[1], 10);
+    return {
+      pid,
+      log: opts.releaseLock
+        ? `wrote PID=${pid} port=${port}, released resolve lock`
+        : `wrote PID=${pid} port=${port}`,
+    };
+  }
+  return {
+    log: opts.releaseLock
+      ? "no remote server PID found via pgrep, released resolve lock"
+      : "no remote server PID found via pgrep",
+  };
+}
+
+/** Result of acquiring the resolve lock and probing for an existing
+ * server, done in a single SSH round-trip. The caller branches on
+ * `reusePort` (reuse existing server vs start fresh) and `locked`
+ * (whether to release the lock later). `log` is for the caller to log. */
+export interface LockProbeResult {
+  /** True if we hold the resolve lock and must release it later. */
+  locked: boolean;
+  /** Remote port to reuse, or undefined to start a fresh server. */
+  reusePort?: number;
+  /** Human-readable context for the caller to log. */
+  log: string;
+}
+
+/**
+ * Acquire the resolve lock and probe for an existing/zombie server in a
+ * single SSH call.
+ *
+ * Folds acquireResolveLock + cleanupZombieServer into one round-trip.
+ * The lock is acquired first (mkdir-based, atomic), then the zombie probe
+ * runs inside the lock. Returns a `LockProbeResult`.
+ */
+export async function acquireLockAndProbeZombie(
+  conn: SshConnection,
+  home: string,
+  installPath: string,
+): Promise<LockProbeResult> {
+  const pidFile = `${installPath}/.server.pid`;
+  const portFile = `${installPath}/.server.port`;
+  const lockDir = `${installPath}/.resolve-lock`;
+  const staleMin = Math.floor(LOCK_STALE_AGE_SEC / 60);
+
+  // One script: acquire lock, then probe zombie. Outputs one line:
+  //   LOCKFAIL                - could not acquire lock
+  //   LOCKED:EMPTY            - locked, no PID file
+  //   LOCKED:INVALID         - locked, invalid PID, cleaned up
+  //   LOCKED:DEAD:<pid>       - locked, PID dead, cleaned up
+  //   LOCKED:REUSE:<port>     - locked, server alive, reuse
+  //   LOCKED:ZOMBIE:<pid>     - locked, killed zombie + strays
+  const script = [
+    `# Acquire lock`,
+    `if mkdir ${shellQuote(lockDir)} 2>/dev/null; then :; else`,
+    `  if find ${shellQuote(lockDir)} -type d -mmin +${staleMin} 2>/dev/null | grep -q .; then`,
+    `    rm -rf ${shellQuote(lockDir)} && mkdir ${shellQuote(lockDir)} || { echo LOCKFAIL; exit 0; }`,
+    `  else`,
+    `    echo LOCKFAIL; exit 0`,
+    `  fi`,
+    `fi`,
+    `# Lock acquired. Probe zombie.`,
+    `pid=$(cat ${shellQuote(pidFile)} 2>/dev/null)`,
+    `if [ -z "$pid" ]; then echo "LOCKED:EMPTY"; exit 0; fi`,
+    `case "$pid" in *[!0-9]*) rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}; echo "LOCKED:INVALID"; exit 0;; esac`,
+    `if ! kill -0 "$pid" 2>/dev/null; then rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}; echo "LOCKED:DEAD:$pid"; exit 0; fi`,
+    `port=$(cat ${shellQuote(portFile)} 2>/dev/null)`,
+    `if [ -n "$port" ]; then`,
+    `  if curl -s -f -o /dev/null http://127.0.0.1:$port/version 2>/dev/null || wget -q -O /dev/null http://127.0.0.1:$port/version 2>/dev/null || (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then`,
+    `    echo "LOCKED:REUSE:$port"; exit 0`,
+    `  fi`,
+    `fi`,
+    `kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null`,
+    `rm -f ${shellQuote(pidFile)} ${shellQuote(portFile)}`,
+    `strays="$(pgrep -f ${shellQuote(installPath)} 2>/dev/null)"`,
+    `for p in $strays; do [ "$p" != "$pid" ] && kill -9 $p 2>/dev/null; done`,
+    `echo "LOCKED:ZOMBIE:$pid:$strays"`,
+  ].join("\n");
+
+  const result = await bbExec(conn, home, script);
+  const out = result.stdout.trim();
+
+  if (out === "LOCKFAIL") {
+    return { locked: false, log: "could not acquire resolve lock - another resolve may be running" };
+  }
+  if (!out.startsWith("LOCKED:")) {
+    return { locked: true, log: `unexpected lock+probe output: ${out}` };
+  }
+  const rest = out.slice(7);
+  if (rest === "EMPTY") return { locked: true, log: "acquired resolve lock, no existing PID file" };
+  if (rest === "INVALID") return { locked: true, log: "acquired resolve lock, invalid PID file cleaned up" };
+  if (rest.startsWith("DEAD:")) {
+    const pid = parseInt(rest.slice(5), 10);
+    return Number.isNaN(pid)
+      ? { locked: true, log: "acquired resolve lock, invalid PID file cleaned up" }
+      : { locked: true, log: `acquired resolve lock, PID ${pid} is dead, cleaned up files` };
+  }
+  if (rest.startsWith("REUSE:")) {
+    const port = parseInt(rest.slice(6), 10);
+    return Number.isNaN(port)
+      ? { locked: true, log: "acquired resolve lock, could not parse REUSE port" }
+      : { locked: true, reusePort: port, log: `acquired resolve lock, server alive on port ${port}, reusing` };
+  }
+  if (rest.startsWith("ZOMBIE:")) {
+    const [pidStr, straysRaw] = rest.slice(7).split(":", 2);
+    const pid = parseInt(pidStr, 10);
+    if (Number.isNaN(pid)) return { locked: true, log: "acquired resolve lock, could not parse ZOMBIE pid" };
+    const strays = (straysRaw ?? "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s && s !== String(pid) && /^\d+$/.test(s));
+    const strayMsg = strays.length > 0 ? `, killed strays ${strays.join(", ")}` : "";
+    return { locked: true, log: `acquired resolve lock, killed zombie PID ${pid}${strayMsg}, cleanup complete` };
+  }
+  return { locked: true, log: `acquired resolve lock, unexpected probe output: ${rest}` };
 }
 
 /**

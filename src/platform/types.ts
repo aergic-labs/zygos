@@ -14,7 +14,6 @@
  */
 
 export type {
-  MinimalLogger,
   DownloadAdapter,
   DownloadTemplateInfo,
 } from "./downloadTypes";

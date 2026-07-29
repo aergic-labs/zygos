@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0]
+
+### Added
+
+- On-disk REH download cache (cacache) keyed on the original URL. Cache hits skip the network. 2GB cap with async prune.
+- Retry with exponential backoff for transient HTTP and network errors.
+
+### Changed
+
+- Improved resolve time with consolidated lifecycle SSH probes.
+- ESLint vendor override block replaces blanket ignore.
+
 ## [0.3.0]
 
 ### Added
