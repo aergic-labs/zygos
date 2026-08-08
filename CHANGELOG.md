@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.1]
+
+- Fixed high-severity advisories in transitive dev deps (brace-expansion, fast-uri, js-yaml).
+
 ## [0.4.0]
 
 ### Added
