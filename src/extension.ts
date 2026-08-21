@@ -13,6 +13,10 @@ import { checkForConflicts, showConflictInfo, findConflictingExtensions } from "
 import { checkArgvAndPromptRestart } from "./platform/argv";
 import { registerHostCommands } from "./host";
 import { registerResolver } from "./resolver";
+import {
+  FolderHistoryManager,
+  captureCurrentWorkspace,
+} from "./remote/folderHistory";
 import { registerServerDownloadPanel } from "./webviews/serverDownloadPanel";
 import { FORK_TEMPLATES } from "./platform/forkTemplates";
 import { initCache, disposeCache } from "./ssh/askpassCache";
@@ -51,11 +55,44 @@ export async function activate(
   // (no remote) or when connected via ssh-remote. The view is declared
   // with remoteName: "ssh-remote" so VS Code won't try to show it inside
   // a devcontainer.
+
+  // Recent-folder history for the SSH Targets tree. Namespaced per
+  // extension so it never collides with artizo's container history when
+  // both are installed in the same IDE. zygos is extensionKind ["ui"], so
+  // it only ever runs on the apex - even inside an SSH remote window. In
+  // that window, workspaceFolders are `vscode-remote://ssh-remote+<hex>/path`
+  // URIs, which is exactly what the shared `captureCurrentWorkspace` helper
+  // filters for. It writes to the APEX globalState - the same store the
+  // tree reads - so recent folders appear on the client where the SSH
+  // Targets tree lives, not stranded on the remote host.
+  const folderHistory = new FolderHistoryManager({
+    state: context.globalState,
+    keyPrefix: "zygos",
+  });
+
+  // Capture on activation when connected to an SSH remote (a folder is
+  // already open), and whenever the workspace folders change. Fire-and-
+  // forget: never fail activation.
+  const capture = (): void => {
+    if (vscode.env.remoteName !== "ssh-remote") return;
+    void captureCurrentWorkspace(folderHistory, "ssh-remote").catch((err) =>
+      logger.info(
+        `[history] capture failed: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  };
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(capture),
+  );
+
   const isHostContext =
     !vscode.env.remoteName || vscode.env.remoteName === "ssh-remote";
   if (isHostContext) {
-    registerHostCommands(context, logger);
+    registerHostCommands(context, logger, folderHistory);
   }
+
+  // On activation inside an SSH remote window, capture the open folder(s).
+  capture();
 
   // Config webview - available in all builds.
   registerServerDownloadPanel(context, {

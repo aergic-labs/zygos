@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2]
+
+### Added
+
+- Recent folders in the Remote Explorer tree, with Forget context menu.
+- Host items show `user@host` when the ssh config has a `User` directive.
+- Auto-refresh the tree when folder history changes (connect, forget).
+
+### Fixed
+
+- High-severity advisory in `nanoid` (transitive dep) via `npm audit fix`.
+
 ## [0.4.1]
 
 - Fixed high-severity advisories in transitive dev deps (brace-expansion, fast-uri, js-yaml).

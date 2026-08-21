@@ -23,7 +23,11 @@ import { getConfigPath } from "../ssh/sshConfig";
 import { encodeAuthority, parseSshDestination } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { buildServerDownloadUrl } from "../remote/url";
-import { SshHostTreeProvider, HostItem } from "./treeView";
+import type {
+  FolderDescriptor,
+  FolderHistoryManager,
+} from "../remote/folderHistory";
+import { SshHostTreeProvider, HostItem, RecentFolderItem } from "./treeView";
 
 // Build-time flag gates the testDownloadUrl command to VSCodium builds only
 // (Kiro is hardcoded - there's nothing to test).
@@ -32,14 +36,20 @@ declare const HAS_VSCODIUM_ADAPTER: boolean;
 export function registerHostCommands(
   context: vscode.ExtensionContext,
   logger: Logger,
+  folderHistory: FolderHistoryManager,
 ): void {
   // --- Tree view ---
-  const treeProvider = new SshHostTreeProvider(logger, context.globalState);
+  const treeProvider = new SshHostTreeProvider(logger, folderHistory);
   const treeView = vscode.window.createTreeView("zygos.hosts", {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
   });
   context.subscriptions.push(treeView);
+
+  // Auto-refresh the tree when the history changes (capture after connect,
+  // addFolders after explicit open, removeFolder after forget). Matches
+  // the artizo explorer's onDidChange subscription.
+  context.subscriptions.push(folderHistory.onDidChange(() => treeProvider.refresh()));
 
   context.subscriptions.push(
     vscode.commands.registerCommand("zygos.connect", () =>
@@ -132,6 +142,48 @@ export function registerHostCommands(
           remoteAuthority: authority,
           reuseWindow: false,
         });
+      },
+    ),
+
+    // --- Recent folder actions (children of host items) ---
+    // Open a recently used remote folder. Reopening also re-captures, which
+    // dedupes + moves the entry to the front (most-recent-first).
+    vscode.commands.registerCommand(
+      "zygos.explorer.openFolderCurrentWindow",
+      async (item: RecentFolderItem) => {
+        if (!item) return;
+        await folderHistory.addFolders([item.descriptor]);
+        await vscode.commands.executeCommand(
+          "vscode.openFolder",
+          item.descriptor.toUri(),
+          { forceReuseWindow: true },
+        );
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "zygos.explorer.openFolderNewWindow",
+      async (item: RecentFolderItem) => {
+        if (!item) return;
+        await folderHistory.addFolders([item.descriptor]);
+        await vscode.commands.executeCommand(
+          "vscode.openFolder",
+          item.descriptor.toUri(),
+          { forceNewWindow: true },
+        );
+      },
+    ),
+
+    // Forget: remove the visual link only. The folder on the remote host
+    // is not touched. No confirmation dialog - the label + tooltip make
+    // the scope clear (matches MS Remote-SSH).
+    vscode.commands.registerCommand(
+      "zygos.explorer.forgetFolder",
+      async (item: RecentFolderItem) => {
+        if (!item) return;
+        const descriptor: FolderDescriptor = item.descriptor;
+        await folderHistory.removeFolder(descriptor);
+        treeProvider.refresh();
       },
     ),
   );

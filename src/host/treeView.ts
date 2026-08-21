@@ -6,39 +6,99 @@
 /**
  * Tree data provider for the "SSH Targets" view in the Remote Explorer.
  *
- * Flat list of hosts from ~/.ssh/config. Per-host context menu:
- * Connect, Open Remote Terminal, Show Server Log.
+ * Two-level tree:
+ *   - Config hosts from ~/.ssh/config (collapsible, fold recent folders
+ *     under each host). Per-host context menu: Connect, Open Terminal,
+ *     Show Server Log.
+ *   - "Orphan" recent authorities (folders opened for hosts not in
+ *     ~/.ssh/config, e.g. a one-off `user@host:port`) shown as their own
+ *     collapsible group, so every recent folder is reachable.
+ *
+ * Recent folders come from the shared `FolderHistoryManager`, namespaced
+ * per-extension so they don't collide with artizo's container history.
  */
 
 import * as vscode from "vscode";
 import type { Logger } from "../common/logger";
 import { loadSshConfig, hostConfigToDestination } from "../ssh/sshConfig";
+import {
+  encodeAuthority,
+  decodeAuthority,
+  formatSshDestination,
+} from "../ssh/destination";
+import type { FolderDescriptor, FolderHistoryManager } from "../remote/folderHistory";
 
 /** contextValue string - used in package.json when clauses. */
 const CTX_HOST = "zygos.host";
+const CTX_RECENT = "zygos.recentFolder";
+const CTX_ORPHAN_GROUP = "zygos.recentGroup";
 
-export class SshHostTreeProvider implements vscode.TreeDataProvider<HostItem> {
-  private _onDidChange = new vscode.EventEmitter<HostItem | undefined>();
+/**
+ * Common interface for anything that carries a `remote` authority and can
+ * parent recent-folder children. Both `HostItem` (config host) and
+ * `RecentGroupItem` (orphan authority) implement it so `getChildren` can
+ * fetch folders uniformly.
+ */
+interface RemoteParentItem {
+  readonly remote: string;
+}
+
+export class SshHostTreeProvider
+  implements vscode.TreeDataProvider<HostItem | RecentGroupItem | RecentFolderItem>
+{
+  private _onDidChange = new vscode.EventEmitter<
+    HostItem | RecentGroupItem | RecentFolderItem | undefined
+  >();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
   constructor(
     private readonly logger: Logger,
-    _globalState: vscode.Memento,
+    private readonly history: FolderHistoryManager,
   ) {}
 
   refresh(): void {
     this._onDidChange.fire(undefined);
   }
 
-  getTreeItem(element: HostItem): vscode.TreeItem {
+  getTreeItem(
+    element: HostItem | RecentGroupItem | RecentFolderItem,
+  ): vscode.TreeItem {
     return element;
   }
 
-  async getChildren(element?: HostItem): Promise<HostItem[]> {
-    if (element) return [];
+  async getChildren(
+    element?: HostItem | RecentGroupItem | RecentFolderItem,
+  ): Promise<(HostItem | RecentGroupItem | RecentFolderItem)[]> {
+    if (element instanceof RecentFolderItem) return [];
+    if (element instanceof HostItem || element instanceof RecentGroupItem) {
+      return this.history
+        .getFolders(element.remote)
+        .map((d) => new RecentFolderItem(d));
+    }
+    // Root: config hosts (with folders nested under them) + orphan groups.
     try {
-      const { hosts } = await loadSshConfig();
-      return hosts.map((alias) => new HostItem(alias));
+      const { hosts, getConfig } = await loadSshConfig();
+      const hostItems: HostItem[] = [];
+      const knownRemotes = new Set<string>();
+      for (const alias of hosts) {
+        const cfg = getConfig(alias);
+        const dest = cfg ? hostConfigToDestination(cfg) : { host: alias };
+        const remote = `ssh-remote+${encodeAuthority(dest)}`;
+        knownRemotes.add(remote);
+        const hasFolders = this.history.getFolders(remote).length > 0;
+        hostItems.push(
+          new HostItem(alias, remote, hasFolders, dest),
+        );
+      }
+      // Orphans: authorities in history that don't match any config host.
+      const orphans = this.history
+        .getRemotes()
+        .filter((r) => r.startsWith("ssh-remote+") && !knownRemotes.has(r));
+      const orphanItems = orphans.map((r) => {
+        const label = decodeLabel(r);
+        return new RecentGroupItem(r, label);
+      });
+      return [...hostItems, ...orphanItems];
     } catch (err) {
       this.logger.error(`[tree] failed to load ssh config: ${err}`);
       return [];
@@ -46,18 +106,41 @@ export class SshHostTreeProvider implements vscode.TreeDataProvider<HostItem> {
   }
 }
 
-export class HostItem extends vscode.TreeItem {
+/** Decode an `ssh-remote+<hex>` authority to `user@host:port` for labels. */
+function decodeLabel(remote: string): string {
+  const hex = remote.substring("ssh-remote+".length);
+  try {
+    return formatSshDestination(decodeAuthority(hex));
+  } catch {
+    return remote;
+  }
+}
+
+/** A configured SSH host. Collapsible when it has recent folders. */
+export class HostItem extends vscode.TreeItem implements RemoteParentItem {
   readonly destination: { host: string; user?: string; port?: number };
 
-  constructor(public readonly alias: string) {
-    super(alias, vscode.TreeItemCollapsibleState.None);
+  constructor(
+    public readonly alias: string,
+    readonly remote: string,
+    hasFolders: boolean,
+    resolvedDestination: { host: string; user?: string; port?: number },
+  ) {
+    // Label matches MS Remote Explorer: user@host when a User directive is
+    // present, otherwise just the hostname/alias.
+    const label = resolvedDestination.user
+      ? `${resolvedDestination.user}@${resolvedDestination.host}`
+      : resolvedDestination.host;
+    super(
+      label,
+      hasFolders
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None,
+    );
     this.contextValue = CTX_HOST;
     this.iconPath = new vscode.ThemeIcon("server");
-    // Resolve the destination lazily from the alias - the config lookup
-    // happens when commands fire, not here, to avoid a sync fs read per
-    // tree render.
-    this.destination = { host: alias };
-    this.tooltip = `SSH: ${alias}`;
+    this.destination = resolvedDestination;
+    this.tooltip = `SSH: ${label}`;
   }
 
   /** Resolve the full destination from ssh config (async, for commands). */
@@ -70,5 +153,38 @@ export class HostItem extends vscode.TreeItem {
     const cfg = getConfig(this.alias);
     if (cfg) return hostConfigToDestination(cfg);
     return { host: this.alias };
+  }
+}
+
+/**
+ * A collapsible group of recent folders for a host NOT in ~/.ssh/config
+ * (e.g. a one-off `user@host:port`). Label is the decoded destination.
+ */
+export class RecentGroupItem extends vscode.TreeItem implements RemoteParentItem {
+  constructor(readonly remote: string, label: string) {
+    super(label, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = CTX_ORPHAN_GROUP;
+    this.iconPath = new vscode.ThemeIcon("history");
+    this.tooltip = `Recent folders: ${label}`;
+  }
+}
+
+/** A recently opened remote folder. Leaf node under HostItem / RecentGroupItem. */
+export class RecentFolderItem extends vscode.TreeItem {
+  constructor(readonly descriptor: FolderDescriptor) {
+    const name = descriptor.folder.split("/").filter(Boolean).pop() ?? descriptor.folder;
+    super(name, vscode.TreeItemCollapsibleState.None);
+    this.description = descriptor.folder;
+    this.contextValue = CTX_RECENT;
+    this.iconPath = new vscode.ThemeIcon("folder");
+    this.tooltip =
+      `Forget this folder from the Recent list. ` +
+      `The folder on the remote host is not affected.\n` +
+      `Path: ${descriptor.folder}`;
+    this.command = {
+      command: "zygos.explorer.openFolderCurrentWindow",
+      title: "Open in Current Window",
+      arguments: [this],
+    };
   }
 }
