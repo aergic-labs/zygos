@@ -33,7 +33,7 @@ import { decodeAuthority, parseAuthority } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { ensureServerInstalled } from "../remote/install";
 import { shellQuote, remoteShPath, remoteToolsDir } from "../remote/busybox";
-import { copyAuthToken } from "../remote/authToken";
+import { copyAuthFiles } from "../remote/authToken";
 import {
   writeConnectionTokenFile,
   removeConnectionTokenFile,
@@ -292,10 +292,10 @@ export class SshRemoteResolver {
     this.logger.info(`[lifecycle] ${lockProbe.log}`);
     const locked = lockProbe.locked;
 
-    // Copy the IDE auth token (e.g. Kiro SSO) to avoid making the user sign
-    // in again on the remote.
-    report("Copying auth token...");
-    await copyAuthToken(conn, installResult.home, platform, this.logger);
+    // Copy the IDE auth files (e.g. Kiro SSO token + refresh-registration
+    // sibling) so the remote can authenticate and refresh on its own.
+    report("Copying auth files...");
+    await copyAuthFiles(conn, installResult.home, platform, this.logger);
 
     // Generate a connection token (the server validates this on every
     // connection). Written to a chmod 600 file on the remote and passed via

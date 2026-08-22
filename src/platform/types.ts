@@ -81,16 +81,17 @@ export interface PlatformAdapter extends DownloadAdapter {
   getRemoteExtensionsDirCandidates?(): string[];
 
   /**
-   * Read the IDE's auth token from the client (e.g. Kiro SSO token).
-   * Returns the raw token contents, or undefined if not present/supported.
+   * Read the IDE's auth files from the client (e.g. Kiro SSO token +
+   * refresh-registration sibling) for forwarding to the remote. Each
+   * entry is a path relative to the remote $HOME and the file content.
+   * Returns an empty array if no auth files exist.
+   *
+   * Implementations should be resilient: if a primary token file
+   * exists but a refresh/registration sibling is missing or cannot
+   * be parsed, return just the primary so the remote still works
+   * until token expiry.
    */
-  readAuthToken?(): string | undefined;
-
-  /**
-   * Path (relative to the remote $HOME) where the auth token should be
-   * written. Only meaningful when readAuthToken is implemented.
-   */
-  getAuthTokenPath?(): string;
+  readAuthFiles?(): { path: string; content: string }[];
 }
 
 /**

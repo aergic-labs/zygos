@@ -94,22 +94,16 @@ describe("KiroAdapter", () => {
     expect(adapter.needsArgvPatch()).toBe(true);
   });
 
-  it("getAuthTokenPath returns the kiro SSO path", () => {
-    expect(adapter.getAuthTokenPath()).toBe(
-      ".aws/sso/cache/kiro-auth-token.json",
-    );
-  });
-
-  it("readAuthToken returns undefined when file doesn't exist", () => {
+  it("readAuthFiles returns empty array when token file is missing", () => {
     // Sandbox the home dir so this never reads (or depends on) the
     // developer's real ~/.aws/sso/cache/kiro-auth-token.json.
     withSandboxHome((home) => {
       void home;
-      expect(adapter.readAuthToken!()).toBeUndefined();
+      expect(adapter.readAuthFiles!()).toEqual([]);
     });
   });
 
-  it("readAuthToken returns file contents when present", () => {
+  it("readAuthFiles returns token alone when clientIdHash sibling is missing", () => {
     // Sandbox the home dir. Writing/removing the token under the real home
     // dir would clobber and DELETE the developer's live Kiro SSO token,
     // signing them out of Kiro on every test run.
@@ -117,7 +111,26 @@ describe("KiroAdapter", () => {
       const tokenPath = path.join(home, ".aws/sso/cache/kiro-auth-token.json");
       fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
       fs.writeFileSync(tokenPath, '{"token":"secret"}');
-      expect(adapter.readAuthToken!()).toBe('{"token":"secret"}');
+      const files = adapter.readAuthFiles!();
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe(".aws/sso/cache/kiro-auth-token.json");
+      expect(files[0].content).toBe('{"token":"secret"}');
+    });
+  });
+
+  it("readAuthFiles returns token + registration sibling when clientIdHash is present", () => {
+    withSandboxHome((home) => {
+      const cacheDir = path.join(home, ".aws", "sso", "cache");
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const hash = "62f34ee6139e829806a9395378292ca998df290e";
+      const tokenPath = path.join(cacheDir, "kiro-auth-token.json");
+      const regPath = path.join(cacheDir, `${hash}.json`);
+      fs.writeFileSync(tokenPath, `{"token":"secret","clientIdHash":"${hash}"}`);
+      fs.writeFileSync(regPath, '{"clientId":"c","clientSecret":"s"}');
+      const files = adapter.readAuthFiles!();
+      expect(files).toHaveLength(2);
+      expect(files[0].path).toBe(".aws/sso/cache/kiro-auth-token.json");
+      expect(files[1].path).toBe(`.aws/sso/cache/${hash}.json`);
     });
   });
 

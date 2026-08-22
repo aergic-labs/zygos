@@ -4,11 +4,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { copyAuthToken } from "../../src/remote/authToken";
+import { copyAuthFiles } from "../../src/remote/authToken";
 import { FakeSshConnection, noopLogger } from "../__mocks__/fakeSshConnection";
 import type { PlatformAdapter } from "../../src/platform/types";
 
-function makeAdapter(token: string | undefined, path: string): PlatformAdapter {
+function makeAdapter(files: { path: string; content: string }[] | undefined): PlatformAdapter {
   return {
     name: "Test",
     dataFolderName: ".test",
@@ -17,13 +17,12 @@ function makeAdapter(token: string | undefined, path: string): PlatformAdapter {
     getServerDownloadUrl: () => "",
     needsArgvPatch: () => false,
     isValidRuntime: () => true,
-    readAuthToken: () => token,
-    getAuthTokenPath: () => path,
+    readAuthFiles: files === undefined ? undefined : () => files!,
   };
 }
 
-describe("copyAuthToken", () => {
-  it("skips when adapter has no readAuthToken", async () => {
+describe("copyAuthFiles", () => {
+  it("skips when adapter has no readAuthFiles", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
     const adapter: PlatformAdapter = {
@@ -34,49 +33,61 @@ describe("copyAuthToken", () => {
       getServerDownloadUrl: () => "",
       needsArgvPatch: () => false,
       isValidRuntime: () => true,
-      // no readAuthToken / getAuthTokenPath
+      // no readAuthFiles
     };
-    await copyAuthToken(conn as any, "/home/user", adapter, noopLogger as any);
+    await copyAuthFiles(conn as any, "/home/user", adapter, noopLogger as any);
     expect(conn.calls.length).toBe(0);
   });
 
-  it("skips when no local token is present", async () => {
+  it("skips when adapter returns no files", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    const adapter = makeAdapter(undefined, ".cache/token.json");
-    await copyAuthToken(conn as any, "/home/user", adapter, noopLogger as any);
+    const adapter = makeAdapter([]);
+    await copyAuthFiles(conn as any, "/home/user", adapter, noopLogger as any);
     expect(conn.calls.length).toBe(0);
   });
 
-  it("writes token to remote path via bbExecWithStdin", async () => {
+  it("streams path/b64 pairs + blank terminator in one call", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    const adapter = makeAuthTokenAdapter("my-token", ".cache/token.json");
-    await copyAuthToken(conn as any, "/home/user", adapter, noopLogger as any);
+    const adapter = makeAdapter([
+      { path: ".aws/sso/cache/kiro-auth-token.json", content: '{"token":"a"}' },
+      { path: ".aws/sso/cache/abc.json", content: '{"client":"b"}' },
+    ]);
+    await copyAuthFiles(conn as any, "/home/user", adapter, noopLogger as any);
     expect(conn.calls.length).toBeGreaterThan(0);
-    const stdin = Array.from(conn.stdinData.values())[0];
-    expect(stdin.toString()).toBe("my-token");
-    // Command should mkdir the parent and write to the path
-    expect(conn.calls.some((c) => c.includes("mkdir -p"))).toBe(true);
-    expect(conn.calls.some((c) => c.includes(".cache/token.json"))).toBe(true);
+    const stdin = Array.from(conn.stdinData.values())[0] as Buffer;
+    const lines = stdin.toString().split("\n");
+    // path / b64 / path / b64 / blank terminator
+    expect(lines[0]).toBe(".aws/sso/cache/kiro-auth-token.json");
+    expect(lines[1]).toBe(
+      Buffer.from('{"token":"a"}', "utf-8").toString("base64"),
+    );
+    expect(lines[2]).toBe(".aws/sso/cache/abc.json");
+    expect(lines[3]).toBe(
+      Buffer.from('{"client":"b"}', "utf-8").toString("base64"),
+    );
+    expect(lines[4]).toBe(""); // blank terminator
+    // Remote script should use temp+mv (atomic, non-fatal).
+    const cmd = conn.calls.join(" ");
+    expect(cmd).toContain("mv -f");
+    expect(cmd).toContain("base64 -d");
   });
 
-  it("throws when write fails", async () => {
+  it("throws when remote command fails", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    conn.setResponse("cat", {
+    conn.setResponse("sh", {
       stdout: "",
       stderr: "denied",
       exitCode: 1,
       signal: null,
     });
-    const adapter = makeAuthTokenAdapter("my-token", ".cache/token.json");
+    const adapter = makeAdapter([
+      { path: ".cache/token.json", content: "x" },
+    ]);
     await expect(
-      copyAuthToken(conn as any, "/home/user", adapter, noopLogger as any),
-    ).rejects.toThrow("Failed to copy auth token");
+      copyAuthFiles(conn as any, "/home/user", adapter, noopLogger as any),
+    ).rejects.toThrow("Failed to copy auth files");
   });
 });
-
-function makeAuthTokenAdapter(token: string, path: string): PlatformAdapter {
-  return makeAdapter(token, path);
-}

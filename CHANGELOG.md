@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3]
+
+### Fixed
+
+- Auth token forwarding now includes the `<clientIdHash>.json` registration sibling so the remote can refresh its own tokens. Previously only `kiro-auth-token.json` was forwarded; the remote would sign out ~1 hour into every session. (#4)
+- Auth file writes are now atomic (temp + mv) and non-fatal on read-only mounts.
+- Busybox bootstrap now runs before the `installPresent` early return. A host provisioned by another extension can have the server installed but no busybox, breaking downstream `bbExec` calls. (#3)
+
 ## [0.4.2]
 
 ### Added

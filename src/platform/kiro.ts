@@ -18,19 +18,53 @@ export class KiroAdapter implements PlatformAdapter {
   readonly serverDataFolderName = ".kiro-server";
   readonly serverApplicationName = "kiro-server";
 
-  /** Read the Kiro SSO token from the client to forward to the remote. */
-  readAuthToken(): string | undefined {
-    const p = path.join(os.homedir(), LOCAL_AUTH_TOKEN_PATH);
-    try {
-      return fs.readFileSync(p, "utf-8");
-    } catch {
-      return undefined;
-    }
-  }
+  /**
+   * Read the Kiro SSO token (and, when present, the client-registration
+   * sibling named by `clientIdHash`) from the client for forwarding to
+   * the remote.
+   *
+   * Always forwards the token file when present — it works until expiry
+   * even without the registration sibling. The registration file holds
+   * the clientId/clientSecret the remote needs to refresh on its own;
+   * without it, the remote signs out ~1h in (zygos issue #4).
+   *
+   * Resilient: if the token JSON can't be parsed or the sibling file is
+   * missing, returns just the token. Many Kiro auth methods don't use
+   * SSO refresh and may not produce the sibling.
+   */
+  readAuthFiles(): { path: string; content: string }[] {
+    const cacheDir = path.join(os.homedir(), ".aws", "sso", "cache");
+    const tokenAbsPath = path.join(cacheDir, "kiro-auth-token.json");
+    if (!fs.existsSync(tokenAbsPath)) return [];
 
-  /** Path (relative to remote $HOME) where the server expects to find the token. */
-  getAuthTokenPath(): string {
-    return LOCAL_AUTH_TOKEN_PATH;
+    let tokenContent: string;
+    try {
+      tokenContent = fs.readFileSync(tokenAbsPath, "utf-8");
+    } catch {
+      return [];
+    }
+    const files: { path: string; content: string }[] = [
+      { path: LOCAL_AUTH_TOKEN_PATH, content: tokenContent },
+    ];
+
+    try {
+      const token = JSON.parse(tokenContent);
+      const hash =
+        typeof token?.clientIdHash === "string" ? token.clientIdHash : "";
+      if (hash && /^[a-f0-9]+$/i.test(hash)) {
+        const regAbsPath = path.join(cacheDir, `${hash}.json`);
+        if (fs.existsSync(regAbsPath)) {
+          files.push({
+            path: `.aws/sso/cache/${hash}.json`,
+            content: fs.readFileSync(regAbsPath, "utf-8"),
+          });
+        }
+      }
+    } catch {
+      // Token isn't valid JSON or doesn't expose clientIdHash.
+      // Token alone still works until expiry.
+    }
+    return files;
   }
 
   getServerDownloadUrl(

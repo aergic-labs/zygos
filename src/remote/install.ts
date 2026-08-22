@@ -92,6 +92,19 @@ export async function ensureServerInstalled(
   const installRoot = `${probe.home}/${productInfo.serverDataFolderName}`;
   const installPath = `${installRoot}/bin/${productInfo.commit}`;
 
+  // --- 2. Bootstrap busybox if missing (single call) ---
+  // Must run before the installPresent early return: every downstream
+  // step (copyAuthFiles, acquireLock, startServer) goes through bbExec,
+  // which needs ~/.ssh-remote/bin/sh. A host provisioned by another
+  // extension (e.g. jeanp413.open-remote-ssh) can have the server already
+  // installed but no busybox, breaking the rest of the resolve.
+  let bootstrapped = false;
+  if (!probe.busyboxPresent) {
+    logger.info(`[install] bootstrapping busybox...`);
+    await bootstrapBusybox(conn, probe.home, probe.arch, extensionPath, logger);
+    bootstrapped = true;
+  }
+
   if (probe.installPresent) {
     logger.info(`[install] already installed, skipping download`);
     return {
@@ -100,16 +113,8 @@ export async function ensureServerInstalled(
       arch: probe.arch,
       home: probe.home,
       alreadyInstalled: true,
-      busyboxBootstrapped: false,
+      busyboxBootstrapped: bootstrapped,
     };
-  }
-
-  // --- 2. Bootstrap busybox if missing (single call) ---
-  let bootstrapped = false;
-  if (!probe.busyboxPresent) {
-    logger.info(`[install] bootstrapping busybox...`);
-    await bootstrapBusybox(conn, probe.home, probe.arch, extensionPath, logger);
-    bootstrapped = true;
   }
 
   // --- 3. Download tarball (client-side) ---

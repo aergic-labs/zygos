@@ -12,8 +12,7 @@ const mockAdapter = {
   serverApplicationName: "code-server-oss",
   serverDataFolderName: ".zygos-server",
   getServerDownloadUrl: () => "https://example.com/server",
-  readAuthToken: undefined,
-  getAuthTokenPath: undefined,
+  readAuthFiles: undefined,
 };
 const mockProductInfo = {
   commit: "abc123",

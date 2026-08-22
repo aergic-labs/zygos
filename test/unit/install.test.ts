@@ -20,6 +20,16 @@ vi.mock("../../src/remote/download", () => ({
   downloadToBuffer: async () => Buffer.alloc(0),
 }));
 
+// Mock bootstrapBusybox so tests that take the busybox-missing path don't
+// need the real vendored binary on disk.
+const { mockBootstrapBusybox } = vi.hoisted(() => ({
+  mockBootstrapBusybox: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../../src/remote/busybox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/remote/busybox")>();
+  return { ...actual, bootstrapBusybox: mockBootstrapBusybox };
+});
+
 function makeAdapter(): PlatformAdapter {
   return {
     name: "Test",
@@ -69,6 +79,32 @@ describe("ensureServerInstalled", () => {
     expect(result.installPath).toContain("abc123");
     expect(result.arch).toBe("x64");
     expect(result.home).toBe("/home/user");
+  });
+
+  it("bootstraps busybox even when server is already installed (issue #3)", async () => {
+    // Host provisioned by another extension: server present, busybox
+    // missing. Without the fix, the early return skipped bootstrap and
+    // every later bbExec call failed with exit 127.
+    const conn = new FakeSshConnection();
+    await conn.connect();
+    conn.setResponse(
+      "printenv",
+      ok("/home/user:::x86_64:::no:::yes"),
+    );
+    conn.setDefault(ok());
+
+    const result = await ensureServerInstalled(
+      conn as any,
+      makeAdapter(),
+      makeProductInfo(),
+      noopLogger as any,
+      "/ext/path",
+    );
+
+    expect(result.alreadyInstalled).toBe(true);
+    expect(result.busyboxBootstrapped).toBe(true);
+    // Bootstrap call ran.
+    expect(mockBootstrapBusybox).toHaveBeenCalled();
   });
 
   it("completes the install when server needs install", async () => {
