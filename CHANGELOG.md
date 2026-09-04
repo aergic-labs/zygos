@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.4]
+
+### Fixed
+
+- High- and moderate-severity advisories in transitive dev deps (`fast-uri`, `qs`) via `npm audit fix`.
+
 ## [0.4.3]
 
 ### Fixed
