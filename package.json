@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -321,16 +321,17 @@
     "@types/cacache": "^20.0.1",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.96.0",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^5.0.1",
     "@vscode/vsce": "^3.9.2",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.8.0",
     "fast-check": "^3.23.0",
     "knip": "^6.15.0",
     "ovsx": "^0.10.12",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.0.0",
-    "vitest": "^4.1.8"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   },
   "dependencies": {
     "cacache": "^21.0.1",

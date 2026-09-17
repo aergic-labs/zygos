@@ -23,7 +23,7 @@ scripts/**
 esbuild.config.mjs
 tsconfig.json
 tsconfig.test.json
-vitest.config.ts
+vitest.config.mts
 eslint.config.mjs
 .knip.json
 .nvmrc

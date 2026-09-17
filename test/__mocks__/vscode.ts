@@ -166,12 +166,14 @@ export namespace window {
   }
 }
 
-export namespace env {
-  export const remoteName: string | undefined = undefined;
+export const env: {
+  remoteName: string | undefined;
+  appRoot: string;
+} = {
+  remoteName: undefined,
   /** Set this in tests to point at a temp dir containing product.json. */
-  // eslint-disable-next-line prefer-const
-  export let appRoot: string = "/nonexistent";
-}
+  appRoot: "/nonexistent",
+};
 
 export namespace workspace {
   export function getConfiguration(section: string): Configuration {

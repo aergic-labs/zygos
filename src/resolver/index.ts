@@ -538,12 +538,22 @@ export class SshRemoteResolver {
     // writing the token we close stdin so `cat` gets EOF, writes the file,
     // and the `exec`'d server inherits a closed stdin (fine for
     // --start-server).
+    //
+    // PATH scoping: prepend `toolsDir` only for the pre-exec steps
+    // (mkdir/cat) that need our busybox on a stripped host. Restore the
+    // original PATH before `exec` so the long-lived server (and the
+    // integrated terminals, tasks, and debug adapters it parents) inherits
+    // the user's real login-shell PATH, not our polyfill. Otherwise busybox
+    // applets shadow system coreutils in the terminal (zygos issue #5:
+    // BusyBox `readlink` lacks `-e` and clobbers coreutils `readlink -e`).
     const writeAndStart =
+      `__zy_path=$PATH; export PATH=${shellQuote(toolsDir)}:$PATH; ` +
       `mkdir -p ${shellQuote(remoteDirName)} && umask 077 && cat > ${shellQuote(tokenFile)} && ` +
+      `export PATH=$__zy_path; unset __zy_path; ` +
       `exec ${startCmd}`;
 
-    // Run via busybox sh to put our tools on PATH.
-    const wrapped = `export PATH=${shellQuote(toolsDir)}:$PATH; ${envExports ? envExports + "; " : ""}${writeAndStart}`;
+    // Run via busybox sh so the pre-exec steps above resolve to our tools.
+    const wrapped = `${envExports ? envExports + "; " : ""}${writeAndStart}`;
 
     this.logger.info(`[resolve] starting server: ${startCmd}`);
 
