@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.6]
+
+### Fixed
+
+- Probe output now anchors on a per-invocation nonce marker, so shell-init output can't corrupt the parsed fields and break busybox bootstrap. (#6)
+
 ## [0.4.5]
 
 ### Fixed

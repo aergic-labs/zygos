@@ -20,6 +20,9 @@ export class FakeSshConnection {
   calls: string[] = [];
   stdinData: Map<string, Buffer> = new Map();
   private responses: Map<string, ExecResult> = new Map();
+  private probeResponse:
+    | { home: string; arch: string; busybox: string; installed: string; rcNoise: string }
+    | undefined;
   private defaultResponse: ExecResult = {
     stdout: "",
     stderr: "",
@@ -49,6 +52,23 @@ export class FakeSshConnection {
     return this;
   }
 
+  /**
+   * Set the probeRemote response (nonce-marker format). Intercepts any
+   * command containing a ZYPROBE nonce; all other commands fall through
+   * to substring matching. `rcNoise` is prepended before the marker to
+   * simulate shell-init output (e.g. zsh .zshenv echo lines).
+   */
+  setProbeResponse(
+    home: string,
+    arch: string,
+    busybox: string,
+    installed: string,
+    rcNoise = "",
+  ): this {
+    this.probeResponse = { home, arch, busybox, installed, rcNoise };
+    return this;
+  }
+
   /** Set the default response for unmatched commands. */
   setDefault(result: ExecResult): this {
     this.defaultResponse = result;
@@ -56,6 +76,13 @@ export class FakeSshConnection {
   }
 
   private match(command: string): ExecResult {
+    if (this.probeResponse && command.includes("ZYPROBE-")) {
+      const m = command.match(/ZYPROBE-[0-9a-f]+/);
+      const p = this.probeResponse;
+      return ok(
+        `${p.rcNoise}${m?.[0] ?? "ZYPROBE-unknown"}\n${p.home}\n${p.arch}\n${p.busybox}\n${p.installed}`,
+      );
+    }
     for (const [key, result] of this.responses) {
       if (command.includes(key)) return result;
     }

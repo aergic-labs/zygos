@@ -22,6 +22,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import type { SshConnection, ExecResult } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 
@@ -96,20 +97,26 @@ export interface RemoteProbe {
  * is already installed for the given commit. Replaces the prior 2-4 call
  * sequence (probeHome + probeArch + isBootstrapped + check install).
  *
- * Output format: four ::: -delimited fields on one line. Avoids JSON
- * escaping issues with unusual home directory paths.
+ * Output protocol: a per-invocation nonce marker line, then one field per
+ * line (home, arch, busybox, installed). The parser anchors on the exact
+ * nonce and ignores anything before it, so shell-init output (e.g. zsh
+ * .zshenv echo lines, BASH_ENV scripts) can't corrupt the fields. A nonce
+ * generated milliseconds ago on the client can't appear in rc noise.
  */
 export async function probeRemote(
   conn: SshConnection,
   serverDataFolderName: string,
   commit: string,
 ): Promise<RemoteProbe> {
+  const marker = `ZYPROBE-${crypto.randomBytes(8).toString("hex")}`;
+
   const cmd =
     `h=$(printenv HOME); ` +
     `a=$(uname -m); ` +
     `b=no; [ -x "$h/${REMOTE_DIR_NAME}/bin/sh" ] && b=yes; ` +
     `i=no; [ -f "$h/${serverDataFolderName}/bin/${commit}/node" ] && i=yes; ` +
-    `printf '%s:::%s:::%s:::%s\\n' "$h" "$a" "$b" "$i"`;
+    `printf '%s\\n' ${shellQuote(marker)}; ` +
+    `printf '%s\\n' "$h" "$a" "$b" "$i"`;
 
   const result = await conn.exec(cmd);
   if (result.exitCode !== 0) {
@@ -118,23 +125,30 @@ export async function probeRemote(
     );
   }
 
-  const parts = result.stdout.trim().split(":::");
-  if (parts.length < 4) {
+  const lines = result.stdout.split("\n").map((l) => l.replace(/\r$/, ""));
+  const markerIdx = lines.indexOf(marker);
+  if (markerIdx === -1) {
     throw new Error(
-      `Remote probe: malformed output (expected 4 fields, got ${parts.length}): ${result.stdout.slice(0, 200)}`,
+      `Remote probe: marker not found in output: ${result.stdout.slice(0, 200)}`,
+    );
+  }
+  const fields = lines.slice(markerIdx + 1, markerIdx + 5);
+  if (fields.length < 4) {
+    throw new Error(
+      `Remote probe: expected 4 fields after marker, got ${fields.length}: ${result.stdout.slice(0, 200)}`,
     );
   }
 
-  const home = parts[0].trim();
+  const home = fields[0].trim();
   if (!home) {
     throw new Error("Remote HOME is empty; refusing to install into /tmp");
   }
 
   return {
     home,
-    arch: normalizeArch(parts[1].trim()),
-    busyboxPresent: parts[2].trim() === "yes",
-    installPresent: parts[3].trim() === "yes",
+    arch: normalizeArch(fields[1].trim()),
+    busyboxPresent: fields[2].trim() === "yes",
+    installPresent: fields[3].trim() === "yes",
   };
 }
 

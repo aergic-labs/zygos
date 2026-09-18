@@ -60,11 +60,7 @@ describe("ensureServerInstalled", () => {
   it("probes and returns early when server is already installed", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    // Probe output: home:::arch:::busybox:::installed
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::yes:::yes"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "yes");
     conn.setDefault(ok());
 
     const result = await ensureServerInstalled(
@@ -87,10 +83,7 @@ describe("ensureServerInstalled", () => {
     // every later bbExec call failed with exit 127.
     const conn = new FakeSshConnection();
     await conn.connect();
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::no:::yes"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "no", "yes");
     conn.setDefault(ok());
 
     const result = await ensureServerInstalled(
@@ -111,10 +104,7 @@ describe("ensureServerInstalled", () => {
     const conn = new FakeSshConnection();
     await conn.connect();
     // Probe: busybox present, install absent
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::yes:::no"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     conn.setDefault(ok());
 
     // downloadToBuffer is mocked to return an empty buffer; the fake ssh
@@ -135,10 +125,7 @@ describe("ensureServerInstalled", () => {
   it("throws when arch is unsupported", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::mips:::no:::no"),
-    );
+    conn.setProbeResponse("/home/user", "mips", "no", "no");
     conn.setDefault(ok());
 
     await expect(
@@ -155,10 +142,7 @@ describe("ensureServerInstalled", () => {
   it("patches the extracted product.json commit to match the IDE", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::yes:::no"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     // The combined patch+verify call: sed -n returns a different commit,
     // sed -i returns success, test -f node succeeds.
     conn.setResponse("sed -n", ok("def456"));
@@ -191,10 +175,7 @@ describe("ensureServerInstalled", () => {
   it("includes a commit-match guard in the patch+verify command", async () => {
     const conn = new FakeSshConnection();
     await conn.connect();
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::yes:::no"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     conn.setResponse("sed -n", ok("abc123"));
     conn.setDefault(ok());
 

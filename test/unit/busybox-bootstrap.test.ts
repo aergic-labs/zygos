@@ -29,11 +29,22 @@ afterEach(() => {
 describe("probeRemote", () => {
   it("returns home, arch, busybox, and install status in one call", async () => {
     const conn = new FakeSshConnection();
-    // Output: home:::arch:::busybox:::installed
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::x86_64:::yes:::no"),
-    );
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
+    conn.setDefault(ok());
+
+    const result = await probeRemote(conn as any, ".test-server", "abc123");
+
+    expect(result.home).toBe("/home/user");
+    expect(result.arch).toBe("x64");
+    expect(result.busyboxPresent).toBe(true);
+    expect(result.installPresent).toBe(false);
+  });
+
+  it("ignores shell-init noise before the marker", async () => {
+    const conn = new FakeSshConnection();
+    // Simulate the bug-report scenario: rc file emits a terminal-title
+    // echo before the probe output (issue #6).
+    conn.setProbeResponse("/home/user", "x86_64", "yes", "no", '-ne "\\033]0;$(hostname)\\007"\n');
     conn.setDefault(ok());
 
     const result = await probeRemote(conn as any, ".test-server", "abc123");
@@ -46,7 +57,7 @@ describe("probeRemote", () => {
 
   it("throws when HOME is empty", async () => {
     const conn = new FakeSshConnection();
-    conn.setResponse("printenv", ok(":::x86_64:::no:::no"));
+    conn.setProbeResponse("", "x86_64", "no", "no");
     conn.setDefault(ok());
 
     await expect(
@@ -56,7 +67,7 @@ describe("probeRemote", () => {
 
   it("throws on unsupported arch", async () => {
     const conn = new FakeSshConnection();
-    conn.setResponse("printenv", ok("/home/user:::mips:::no:::no"));
+    conn.setProbeResponse("/home/user", "mips", "no", "no");
     conn.setDefault(ok());
 
     await expect(
@@ -64,22 +75,19 @@ describe("probeRemote", () => {
     ).rejects.toThrow("Unsupported");
   });
 
-  it("throws on malformed output", async () => {
+  it("throws when the marker is missing from output", async () => {
     const conn = new FakeSshConnection();
     conn.setResponse("printenv", ok("garbage"));
     conn.setDefault(ok());
 
     await expect(
       probeRemote(conn as any, ".test-server", "abc123"),
-    ).rejects.toThrow("malformed");
+    ).rejects.toThrow("marker not found");
   });
 
   it("reports installPresent=true when node exists", async () => {
     const conn = new FakeSshConnection();
-    conn.setResponse(
-      "printenv",
-      ok("/home/user:::aarch64:::yes:::yes"),
-    );
+    conn.setProbeResponse("/home/user", "aarch64", "yes", "yes");
     conn.setDefault(ok());
 
     const result = await probeRemote(conn as any, ".test-server", "abc123");
