@@ -223,7 +223,7 @@ export class SshExecServer {
   /** Kill a process on the remote by PID. */
   async kill(processId: number): Promise<void> {
     this.logger.info(`[execServer] kill pid=${processId}`);
-    await this.conn.exec(`kill ${processId} 2>/dev/null || true`);
+    await this.conn.exec(`kill ${processId}`);
   }
 
   /** Connect to a TCP host:port on the remote via SOCKS5. */
@@ -259,8 +259,7 @@ export class SshExecServer {
     stat: async (path: string): Promise<FileStat> => {
       this.logger.debug(`[execServer] fs.stat: ${path}`);
       const result = await this.conn.exec(
-        `stat -c "%F %s %Y" ${shellQuote(path)} 2>/dev/null || ` +
-          `stat -f "%HT %z %m" ${shellQuote(path)} 2>/dev/null`,
+        `sh -c ${shellQuote('stat -c "%F %s %Y" "$1" 2>/dev/null || stat -f "%HT %z %m" "$1" 2>/dev/null')} sh ${shellQuote(path)}`,
       );
       if (result.exitCode !== 0) {
         this.logger.info(`[execServer] fs.stat failed: ${path}: ${result.stderr.trim()}`);
@@ -306,7 +305,7 @@ export class SshExecServer {
 
     rm: async (path: string): Promise<void> => {
       this.logger.debug(`[execServer] fs.rm: ${path}`);
-      await this.conn.exec(`rm -rf ${shellQuote(path)} 2>/dev/null || true`);
+      await this.conn.exec(`rm -rf ${shellQuote(path)}`);
     },
 
     rename: async (fromPath: string, toPath: string): Promise<void> => {
@@ -386,6 +385,9 @@ export class SshExecServer {
   ): string {
     const parts: string[] = [];
     if (options?.env) {
+      // Use `env` to set vars instead of POSIX `K=V command` prefix syntax,
+      // which non-POSIX shells (e.g. fish) don't understand.
+      parts.push("env");
       for (const [k, v] of Object.entries(options.env)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
           throw new Error(`Invalid env var name: ${k}`);
@@ -394,7 +396,12 @@ export class SshExecServer {
       }
     }
     if (options?.cwd) {
-      parts.push(`cd ${shellQuote(options.cwd)} &&`);
+      // Use `sh -c 'cd "$0" && exec "$@"'` with cwd as $0 and command+args
+      // as $@, so the script stays single-quote-free (no nested quoting)
+      // and works regardless of the remote login shell.
+      parts.push(
+        `sh -c ${shellQuote('cd "$0" && exec "$@"')} ${shellQuote(options.cwd)}`,
+      );
     }
     parts.push(command);
     for (const a of args) {

@@ -110,15 +110,22 @@ export async function probeRemote(
 ): Promise<RemoteProbe> {
   const marker = `ZYPROBE-${crypto.randomBytes(8).toString("hex")}`;
 
-  const cmd =
+  // Probe script: detect HOME, arch, busybox, and existing install in one
+  // call. Values are embedded directly (they're constants/hex — no user
+  // input). The marker is passed as $1 so the script stays single-quote-free,
+  // keeping the outer shellQuote clean (no nested quoting).
+  //
+  // Run under /bin/sh so the POSIX syntax runs regardless of the remote
+  // login shell (e.g. fish, which rejects `=` assignment syntax).
+  const script =
     `h=$(printenv HOME); ` +
     `a=$(uname -m); ` +
     `b=no; [ -x "$h/${REMOTE_DIR_NAME}/bin/sh" ] && b=yes; ` +
     `i=no; [ -f "$h/${serverDataFolderName}/bin/${commit}/node" ] && i=yes; ` +
-    `printf '%s\\n' ${shellQuote(marker)}; ` +
-    `printf '%s\\n' "$h" "$a" "$b" "$i"`;
+    `printf "%s\n" "$1"; ` +
+    `printf "%s\n" "$h" "$a" "$b" "$i"`;
 
-  const result = await conn.exec(cmd);
+  const result = await conn.exec(`sh -c ${shellQuote(script)} sh ${shellQuote(marker)}`);
   if (result.exitCode !== 0) {
     throw new Error(
       `Remote probe failed (exit ${result.exitCode}): ${result.stderr || result.stdout.slice(0, 200)}`,
@@ -221,15 +228,22 @@ export async function bootstrapBusybox(
   const busyboxBuf = fs.readFileSync(localPath);
   logger.info(`[busybox] read ${busyboxBuf.length} bytes from ${localPath}`);
 
-  const cmd =
-    `mkdir -p ${shellQuote(toolsDir)} && ` +
-    `cat > ${shellQuote(bbPath)} && ` +
-    `chmod +x ${shellQuote(bbPath)} && ` +
-    `${shellQuote(bbPath)} true && ` +
-    `${shellQuote(bbPath)} --install -s ${shellQuote(toolsDir)}`;
+  // Pass toolsDir as $1 and bbPath as $2 so the script stays
+  // single-quote-free, keeping the outer shellQuote clean (no nested
+  // quoting). Run under /bin/sh so the bootstrap chain runs regardless of
+  // the remote login shell (e.g. fish).
+  const script =
+    `mkdir -p "$1" && ` +
+    `cat > "$2" && ` +
+    `chmod +x "$2" && ` +
+    `"$2" true && ` +
+    `"$2" --install -s "$1"`;
 
   logger.info(`[busybox] streaming binary + bootstrap in one call...`);
-  const result = await conn.execWithStdin(cmd, busyboxBuf);
+  const result = await conn.execWithStdin(
+    `sh -c ${shellQuote(script)} sh ${shellQuote(toolsDir)} ${shellQuote(bbPath)}`,
+    busyboxBuf,
+  );
   if (result.exitCode !== 0) {
     throw new Error(
       `Bootstrap failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,

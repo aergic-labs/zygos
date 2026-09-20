@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.7]
+
+### Fixed
+
+- All SSH exec commands now run under `sh -c` (or are simple single-binary commands), so non-POSIX shells like fish don't break the install flow or the exec server. (#7)
+
 ## [0.4.6]
 
 ### Fixed

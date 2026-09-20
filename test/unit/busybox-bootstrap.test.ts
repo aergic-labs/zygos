@@ -94,6 +94,18 @@ describe("probeRemote", () => {
     expect(result.installPresent).toBe(true);
     expect(result.arch).toBe("arm64");
   });
+
+  it("runs the probe under sh -c (works with non-POSIX login shells like fish)", async () => {
+    const conn = new FakeSshConnection();
+    conn.setProbeResponse("/home/fisher", "x86_64", "no", "no");
+    conn.setDefault(ok());
+
+    await probeRemote(conn as any, ".test-server", "abc123");
+
+    // The command sent to ssh must be `sh -c '<probe script>'`, not the
+    // raw POSIX script, so a fish login shell doesn't choke on `=`.
+    expect(conn.calls[0]).toMatch(/^sh -c /);
+  });
 });
 
 describe("probeHome", () => {
@@ -179,6 +191,7 @@ describe("bootstrapBusybox", () => {
     // One call containing all steps.
     expect(conn.calls).toHaveLength(1);
     const cmd = conn.calls[0];
+    expect(cmd).toMatch(/^sh -c /);
     expect(cmd).toContain("mkdir -p");
     expect(cmd).toContain("cat >");
     expect(cmd).toContain("chmod +x");
