@@ -26,7 +26,7 @@ import {
   decodeAuthority,
   formatSshDestination,
 } from "../ssh/destination";
-import type { FolderDescriptor, FolderHistoryManager } from "../remote/folderHistory";
+import { FolderDescriptor, type FolderHistoryManager } from "../remote/folderHistory";
 
 /** contextValue string - used in package.json when clauses. */
 const CTX_HOST = "zygos.host";
@@ -82,12 +82,15 @@ export class SshHostTreeProvider
       const knownRemotes = new Set<string>();
       for (const alias of hosts) {
         const cfg = getConfig(alias);
-        const dest = cfg ? hostConfigToDestination(cfg) : { host: alias };
-        const remote = `ssh-remote+${encodeAuthority(dest)}`;
+        const resolved = cfg ? hostConfigToDestination(cfg) : { host: alias };
+        // Key on the alias so ssh matches the Host block. Migrate any
+        // history keyed on the old resolved authority (idempotent).
+        const remote = `ssh-remote+${encodeAuthority({ host: alias })}`;
+        if (cfg) await this.migrateHistory(remote, resolved);
         knownRemotes.add(remote);
         const hasFolders = this.history.getFolders(remote).length > 0;
         hostItems.push(
-          new HostItem(alias, remote, hasFolders, dest),
+          new HostItem(alias, remote, hasFolders, resolved),
         );
       }
       // Orphans: authorities in history that don't match any config host.
@@ -103,6 +106,21 @@ export class SshHostTreeProvider
       this.logger.error(`[tree] failed to load ssh config: ${err}`);
       return [];
     }
+  }
+
+  /** Move folder history from the old resolved authority to the alias. */
+  private async migrateHistory(
+    newRemote: string,
+    resolved: { host: string; user?: string; port?: number },
+  ): Promise<void> {
+    const oldRemote = `ssh-remote+${encodeAuthority(resolved)}`;
+    if (oldRemote === newRemote) return;
+    const oldFolders = this.history.getFolders(oldRemote);
+    if (oldFolders.length === 0) return;
+    await this.history.addFolders(
+      oldFolders.map((f) => new FolderDescriptor(newRemote, f.folder)),
+    );
+    for (const f of oldFolders) await this.history.removeFolder(f);
   }
 }
 
@@ -126,32 +144,30 @@ export class HostItem extends vscode.TreeItem implements RemoteParentItem {
     hasFolders: boolean,
     resolvedDestination: { host: string; user?: string; port?: number },
   ) {
-    // Label matches MS Remote Explorer: user@host when a User directive is
-    // present, otherwise just the hostname/alias.
-    const label = resolvedDestination.user
-      ? `${resolvedDestination.user}@${resolvedDestination.host}`
-      : resolvedDestination.host;
+    // Label is the alias (unambiguous per Host block); the resolved
+    // user@host is the dimmed description so the row is identifiable.
     super(
-      label,
+      alias,
       hasFolders
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None,
     );
+    const desc = resolvedDestination.user
+      ? `${resolvedDestination.user}@${resolvedDestination.host}`
+      : resolvedDestination.host;
+    this.description = desc !== alias ? desc : undefined;
     this.contextValue = CTX_HOST;
     this.iconPath = new vscode.ThemeIcon("server");
     this.destination = resolvedDestination;
-    this.tooltip = `SSH: ${label}`;
+    this.tooltip = `SSH: ${alias} (${desc})`;
   }
 
-  /** Resolve the full destination from ssh config (async, for commands). */
+  /** Pass the alias straight to ssh so it matches the Host block. */
   async resolveDestination(): Promise<{
     host: string;
     user?: string;
     port?: number;
   }> {
-    const { getConfig } = await loadSshConfig();
-    const cfg = getConfig(this.alias);
-    if (cfg) return hostConfigToDestination(cfg);
     return { host: this.alias };
   }
 }

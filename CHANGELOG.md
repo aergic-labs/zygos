@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8]
+
+### Fixed
+
+- Tree view now passes the ssh config alias (not the resolved host) to ssh, so `Host` block directives (`ProxyJump`, `User`, `IdentityFile`, `ControlMaster`) are honored. (#7)
+- `zygos.configFile` and `zygos.sshPath` are now honored by the resolver and the open-terminal / server-log commands; `~` is expanded in both.
+
 ## [0.4.7]
 
 ### Fixed

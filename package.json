@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {

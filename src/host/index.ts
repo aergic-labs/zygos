@@ -19,7 +19,7 @@
 
 import * as vscode from "vscode";
 import type { Logger } from "../common/logger";
-import { getConfigPath } from "../ssh/sshConfig";
+import { getConfigPath, sshSettings } from "../ssh/sshConfig";
 import { encodeAuthority, parseSshDestination } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { buildServerDownloadUrl } from "../remote/url";
@@ -88,17 +88,14 @@ export function registerHostCommands(
       "zygos.openTerminal",
       async (item: HostItem) => {
         if (!item) return;
-        const dest = await item.resolveDestination();
+        const { sshPath, configFile } = sshSettings();
         const sshArgs: string[] = [];
-        if (dest.port) sshArgs.push("-p", String(dest.port));
-        sshArgs.push(dest.user ? `${dest.user}@${dest.host}` : dest.host);
-        const label = dest.user
-          ? `${dest.user}@${dest.host}${dest.port ? `:${dest.port}` : ""}`
-          : dest.host;
-        logger.info(`[terminal] opening on ${label}`);
+        if (configFile) sshArgs.push("-F", configFile);
+        sshArgs.push(item.alias);
+        logger.info(`[terminal] opening on ${item.alias}`);
         const terminal = vscode.window.createTerminal({
-          name: `SSH: ${label}`,
-          shellPath: "ssh",
+          name: `SSH: ${item.alias}`,
+          shellPath: sshPath ?? "ssh",
           shellArgs: sshArgs,
         });
         terminal.show();
@@ -110,21 +107,18 @@ export function registerHostCommands(
       "zygos.showServerLog",
       async (item: HostItem) => {
         if (!item) return;
-        const dest = await item.resolveDestination();
+        const { sshPath, configFile } = sshSettings();
         const sshArgs: string[] = [];
-        if (dest.port) sshArgs.push("-p", String(dest.port));
-        const target = dest.user ? `${dest.user}@${dest.host}` : dest.host;
-        const label = dest.user
-          ? `${dest.user}@${dest.host}${dest.port ? `:${dest.port}` : ""}`
-          : dest.host;
+        if (configFile) sshArgs.push("-F", configFile);
+        sshArgs.push(item.alias);
         const platform = detectPlatform();
         const info = getProductInfo(platform);
         const logPath = `~/.${info.serverDataFolderName}/.${info.commit}.log`;
-        logger.info(`[server-log] tailing ${logPath} on ${label}`);
+        logger.info(`[server-log] tailing ${logPath} on ${item.alias}`);
         const terminal = vscode.window.createTerminal({
-          name: `Server Log: ${label}`,
-          shellPath: "ssh",
-          shellArgs: [...sshArgs, target, `tail -f ${logPath}`],
+          name: `Server Log: ${item.alias}`,
+          shellPath: sshPath ?? "ssh",
+          shellArgs: [...sshArgs, `tail -f ${logPath}`],
         });
         terminal.show();
       },

@@ -29,6 +29,7 @@ import * as path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../common/logger";
 import { SshConnection, type SshConnectOptions } from "../ssh/connection";
+import { sshSettings } from "../ssh/sshConfig";
 import { decodeAuthority, parseAuthority } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { ensureServerInstalled } from "../remote/install";
@@ -641,16 +642,16 @@ export class SshRemoteResolver {
   }
 
   /**
-   * Extra SSH connect options from user settings. Currently the custom ssh
-   * binary path (`zygos.sshPath`); empty when the user hasn't set one, so
-   * SshConnection falls back to `ssh` on PATH.
+   * Extra SSH connect options from user settings: custom ssh binary
+   * (`zygos.sshPath`) and config file (`zygos.configFile`), both with `~/`
+   * expansion. Empty values fall back to ssh defaults.
    */
   private connectionExtras(): Partial<SshConnectOptions> {
-    const sshPath = vscode.workspace
-      .getConfiguration("zygos")
-      .get<string>("sshPath", "")
-      .trim();
-    return sshPath ? { sshPath } : {};
+    const { sshPath, configFile } = sshSettings();
+    const extras: Partial<SshConnectOptions> = {};
+    if (sshPath) extras.sshPath = sshPath;
+    if (configFile) extras.configFile = configFile;
+    return extras;
   }
 
   /**

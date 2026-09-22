@@ -92,6 +92,22 @@ describe("SshConnection.buildExecArgs", () => {
     // sshPath is internal; just verify buildExecArgs doesn't throw.
     expect(conn.buildExecArgs("true")).toBeDefined();
   });
+
+  it("emits -F when configFile is set", () => {
+    const conn = SshConnection.fromDestination(
+      { host: "h" },
+      { configFile: "/custom/ssh_config" },
+    );
+    const args = conn.buildExecArgs("true");
+    const idx = args.indexOf("-F");
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe("/custom/ssh_config");
+  });
+
+  it("omits -F when configFile is unset", () => {
+    const conn = SshConnection.fromDestination({ host: "h" });
+    expect(conn.buildExecArgs("true")).not.toContain("-F");
+  });
 });
 
 describe("SshConnection.isConnected", () => {

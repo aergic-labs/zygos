@@ -29,6 +29,8 @@ export interface SshConnectOptions {
   host: string;
   /** Custom ssh binary path. Defaults to "ssh". */
   sshPath?: string;
+  /** Path to a custom ssh config file (-F). Empty = ssh default. */
+  configFile?: string;
   /** Extra args to pass to ssh (e.g. ["-o", "ConnectTimeout=10"]). */
   extraArgs?: string[];
   /** Logger for ssh verbose output. */
@@ -49,6 +51,7 @@ export interface SshConnectOptions {
 export class SshConnection {
   private readonly label: string;
   private readonly sshPath: string;
+  private readonly configFile?: string;
   private readonly extraArgs: string[];
   private readonly logger?: Logger;
   private readonly askpass?: AskpassServer;
@@ -60,6 +63,7 @@ export class SshConnection {
   constructor(private readonly options: SshConnectOptions) {
     this.label = options.host;
     this.sshPath = options.sshPath ?? "ssh";
+    this.configFile = options.configFile;
     this.extraArgs = options.extraArgs ?? [];
     this.logger = options.logger;
     this.askpass = options.askpass;
@@ -139,6 +143,7 @@ export class SshConnection {
         ...this.batchModeArgs(),
         "-o",
         "ConnectTimeout=15",
+        ...this.configFileArgs(),
         ...this.extraArgs,
         this.options.host,
         command,
@@ -236,6 +241,7 @@ export class SshConnection {
       ...this.batchModeArgs(),
       "-o",
       "ConnectTimeout=15",
+      ...this.configFileArgs(),
       ...this.extraArgs,
       ...extraArgs,
       this.options.host,
@@ -260,6 +266,7 @@ export class SshConnection {
       ...this.batchModeArgs(),
       "-o",
       "ConnectTimeout=15",
+      ...this.configFileArgs(),
       ...this.extraArgs,
       this.options.host,
       command,
@@ -272,6 +279,11 @@ export class SshConnection {
    */
   private batchModeArgs(): string[] {
     return this.askpass ? [] : ["-o", "BatchMode=yes"];
+  }
+
+  /** -F <path> when a custom config file is set, otherwise nothing. */
+  private configFileArgs(): string[] {
+    return this.configFile ? ["-F", this.configFile] : [];
   }
 
   /**

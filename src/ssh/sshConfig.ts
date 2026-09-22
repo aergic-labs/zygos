@@ -48,6 +48,25 @@ export function getConfigPath(): string {
   return DEFAULT_CONFIG_PATH;
 }
 
+/**
+ * Read `zygos.sshPath` and `zygos.configFile` with `~/` expansion.
+ * Undefined fields when unset so callers can omit them from ssh args.
+ */
+export function sshSettings(): {
+  sshPath?: string;
+  configFile?: string;
+} {
+  const cfg = vscode.workspace.getConfiguration("zygos");
+  const expand = (v: string): string =>
+    v.startsWith("~/") ? path.join(os.homedir(), v.slice(2)) : v;
+  const sshPath = cfg.get<string>("sshPath", "").trim();
+  const configFile = cfg.get<string>("configFile", "").trim();
+  return {
+    sshPath: sshPath ? expand(sshPath) : undefined,
+    configFile: configFile ? expand(configFile) : undefined,
+  };
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
