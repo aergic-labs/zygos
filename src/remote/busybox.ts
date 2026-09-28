@@ -41,6 +41,74 @@ export function remoteShPath(home: string): string {
   return `${remoteToolsDir(home)}/sh`;
 }
 
+// --- Agent forwarding (SOCKS forward owns the forwarded agent socket) ---
+
+/**
+ * Remote side of agent forwarding for one window: the remote HOME and the
+ * per-window symlink the window's terminals use as SSH_AUTH_SOCK.
+ */
+export interface AgentForward {
+  home: string;
+  link: string;
+}
+
+/** Per-window agent symlink path on the remote. */
+export function agentLinkPath(home: string, id: string): string {
+  return `${home}/${REMOTE_DIR_NAME}/agent-${id}`;
+}
+
+/**
+ * Remote command for the SOCKS forward when it owns the agent socket.
+ *
+ * sshd creates a forwarded agent socket per session and removes it when the
+ * session ends, so the symlink must point at a long-lived session's socket.
+ * This command repoints the window's symlink at its own $SSH_AUTH_SOCK,
+ * reports the result after a nonce marker (same protocol as probeRemote, so
+ * shell-init output can't corrupt it), then stays alive with MS Remote-SSH's
+ * keep-alive loop. The periodic write lets sshd notice a dead link and tear
+ * the session down.
+ *
+ * Runs under the vendored busybox sh with its tools on PATH (this process
+ * only; the server never inherits it). Static script, values as positional
+ * args, no single quotes inside, so the user's login shell (e.g. fish) only
+ * sees single-quoted args.
+ */
+export function agentForwardCommand(
+  home: string,
+  link: string,
+): { command: string; marker: string } {
+  const marker = `ZYAGENT-${crypto.randomBytes(8).toString("hex")}`;
+  const script =
+    `PATH="$2:$PATH"; export PATH; ` +
+    `s=; if [ -n "$SSH_AUTH_SOCK" ] && ln -f -s "$SSH_AUTH_SOCK" "$1"; then s=yes; fi; ` +
+    `printf "%s\n" "$3" "$s"; ` +
+    `while :; do sleep 180; printf " "; done`;
+  return {
+    command: `${remoteShPath(home)} -c ${shellQuote(script)} sh ${shellQuote(link)} ${shellQuote(remoteToolsDir(home))} ${shellQuote(marker)}`,
+    marker,
+  };
+}
+
+/**
+ * Parse agentForwardCommand output accumulated so far. Returns undefined
+ * until the marker line and the line after it are complete, then whether
+ * the symlink now points at a live forwarded agent. Anything before the
+ * marker (shell-init noise) is ignored.
+ */
+export function parseAgentForwardReady(
+  stdout: string,
+  marker: string,
+): boolean | undefined {
+  const lines = stdout.split("\n");
+  // The last element is an incomplete line (or "" after a trailing newline).
+  for (let i = 0; i < lines.length - 2; i++) {
+    if (lines[i].replace(/\r$/, "") === marker) {
+      return lines[i + 1].replace(/\r$/, "") === "yes";
+    }
+  }
+  return undefined;
+}
+
 /** Local path to the bundled busybox binary for a given arch. */
 export function localBusyboxPath(extensionPath: string, arch: string): string {
   return path.join(extensionPath, "tools", "busybox", `bb-${arch}`);

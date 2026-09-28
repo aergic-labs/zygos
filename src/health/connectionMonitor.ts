@@ -30,6 +30,7 @@ import type { ChildProcess } from "node:child_process";
 import * as vscode from "vscode";
 import type { Logger } from "../common/logger";
 import type { SshConnection } from "../ssh/connection";
+import type { AgentForward } from "../remote/busybox";
 import { SleepDetector } from "./sleepDetector";
 
 /**
@@ -52,13 +53,31 @@ export interface MonitoredConnection {
   dead: boolean;
   /** If false, we are reusing another window's server. Don't check serverProcess liveness. */
   ownsServer: boolean;
+  /** Set when the forward owns this window's agent symlink; passed on restart. */
+  agent?: AgentForward;
+}
+
+/** A started SOCKS forward. */
+export interface SocksForward {
+  process: ChildProcess;
+  /**
+   * Resolves once the remote side is ready: true if the agent symlink now
+   * points at a live forwarded agent. Resolves false immediately when the
+   * forward has no agent role. Rejects if the forward dies or times out
+   * before reporting.
+   */
+  agentReady: Promise<boolean>;
 }
 
 export interface ConnectionMonitorDeps {
   /** Find a free local TCP port. */
   findFreePort(): Promise<number>;
-  /** Start a new SOCKS forward. Returns the child process. */
-  startSocksForward(conn: SshConnection, socksPort: number): ChildProcess;
+  /** Start a new SOCKS forward. */
+  startSocksForward(
+    conn: SshConnection,
+    socksPort: number,
+    agent?: AgentForward,
+  ): SocksForward;
   /** Wait for a local port to accept connections. */
   waitForPort(port: number, timeoutMs: number): Promise<void>;
 }
@@ -245,8 +264,16 @@ export class ConnectionMonitor {
   private async restartForward(): Promise<void> {
     this.logger.info("[health] restarting SOCKS forward...");
     const newPort = await this.deps.findFreePort();
-    const newForward = this.deps.startSocksForward(this.conn.conn, newPort);
-    await this.deps.waitForPort(newPort, 10_000);
+    const started = this.deps.startSocksForward(
+      this.conn.conn,
+      newPort,
+      this.conn.agent,
+    );
+    const newForward = started.process;
+    await Promise.all([
+      this.deps.waitForPort(newPort, 10_000),
+      started.agentReady,
+    ]);
 
     // Kill the old process if it's somehow still around.
     try {

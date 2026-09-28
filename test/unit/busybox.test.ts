@@ -13,7 +13,61 @@ import {
   localBusyboxPath,
   shellQuote,
   normalizeArch,
+  agentLinkPath,
+  agentForwardCommand,
+  parseAgentForwardReady,
 } from "../../src/remote/busybox";
+
+describe("agentLinkPath", () => {
+  it("lives under $HOME/.ssh-remote", () => {
+    expect(agentLinkPath("/home/user", "0123456789abcdef")).toBe(
+      "/home/user/.ssh-remote/agent-0123456789abcdef",
+    );
+  });
+});
+
+describe("agentForwardCommand", () => {
+  it("runs a static script under busybox sh with values as positional args", () => {
+    const link = "/home/user/.ssh-remote/agent-x";
+    const { command, marker } = agentForwardCommand("/home/user", link);
+    expect(marker).toMatch(/^ZYAGENT-[0-9a-f]{16}$/);
+    expect(command.startsWith("/home/user/.ssh-remote/bin/sh -c '")).toBe(true);
+    expect(command.endsWith(
+      ` sh ${shellQuote(link)} ${shellQuote("/home/user/.ssh-remote/bin")} ${shellQuote(marker)}`,
+    )).toBe(true);
+    // Script contains no single quotes, so shellQuote needs no escaping.
+    expect(command).not.toContain("'\\''");
+    expect(command).toContain("while :; do sleep 180;");
+  });
+
+  it("uses a fresh marker per invocation", () => {
+    const a = agentForwardCommand("/h", "/h/l").marker;
+    const b = agentForwardCommand("/h", "/h/l").marker;
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("parseAgentForwardReady", () => {
+  const m = "ZYAGENT-0123456789abcdef";
+
+  it("returns undefined until the report line is complete", () => {
+    expect(parseAgentForwardReady("", m)).toBeUndefined();
+    expect(parseAgentForwardReady(`${m}\n`, m)).toBeUndefined();
+    expect(parseAgentForwardReady(`${m}\nye`, m)).toBeUndefined();
+  });
+
+  it("ignores shell-init noise before the marker", () => {
+    expect(parseAgentForwardReady(`hello\n${m}x\n${m}\nyes\n`, m)).toBe(true);
+  });
+
+  it("reports no agent for an empty value", () => {
+    expect(parseAgentForwardReady(`${m}\n\n`, m)).toBe(false);
+  });
+
+  it("handles CRLF and trailing keep-alive output", () => {
+    expect(parseAgentForwardReady(`${m}\r\nyes\r\n  `, m)).toBe(true);
+  });
+});
 
 describe("remoteToolsDir", () => {
   it("returns $HOME/.ssh-remote/bin", () => {

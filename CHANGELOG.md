@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.9]
+
+### Fixed
+
+- Forwarded ssh agent (`ForwardAgent yes`) keeps working after reconnects: each window's terminals use a stable `SSH_AUTH_SOCK` symlink, repointed on every connection.
+
 ## [0.4.8]
 
 ### Fixed

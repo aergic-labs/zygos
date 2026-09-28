@@ -30,7 +30,18 @@ export class FakeSshConnection {
     signal: null,
   };
   socksServers: net.Server[] = [];
+  spawns: { command: string | undefined; args: string[] }[] = [];
   private spawnStdout: string | undefined;
+  private agentReport = "yes";
+
+  /**
+   * Value the SOCKS forward's agent command reports after its ZYAGENT
+   * marker: "yes" (forwarded agent linked) or "" (no forwarded agent).
+   */
+  setAgentReport(value: "yes" | ""): this {
+    this.agentReport = value;
+    return this;
+  }
 
   constructor(
     private readonly options: SshConnectOptions = { host: "test@fake" },
@@ -110,6 +121,7 @@ export class FakeSshConnection {
   }
 
   spawnProcess(_command?: string, _extraArgs: string[] = []): any {
+    this.spawns.push({ command: _command, args: _extraArgs });
     // If called with -D <port> (SOCKS forward), create a real TCP listener
     // on that port so waitForPort() succeeds. The listener is tracked for
     // cleanup via stopSocksListeners().
@@ -132,6 +144,13 @@ export class FakeSshConnection {
     // called with a command string, not just -D args).
     if (_command && this.spawnStdout) {
       const data = this.spawnStdout;
+      setImmediate(() => ee.stdout.emit("data", Buffer.from(data, "utf-8")));
+    }
+    // SOCKS forward agent command: simulate shell-init noise, then the
+    // marker and the agent report.
+    const agentMarker = _command?.match(/ZYAGENT-[0-9a-f]+/)?.[0];
+    if (agentMarker) {
+      const data = `rc noise\n${agentMarker}\n${this.agentReport}\n`;
       setImmediate(() => ee.stdout.emit("data", Buffer.from(data, "utf-8")));
     }
 

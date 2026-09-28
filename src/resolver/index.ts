@@ -33,7 +33,15 @@ import { sshSettings } from "../ssh/sshConfig";
 import { decodeAuthority, parseAuthority } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { ensureServerInstalled } from "../remote/install";
-import { shellQuote, remoteShPath, remoteToolsDir } from "../remote/busybox";
+import {
+  shellQuote,
+  remoteShPath,
+  remoteToolsDir,
+  agentLinkPath,
+  agentForwardCommand,
+  parseAgentForwardReady,
+  type AgentForward,
+} from "../remote/busybox";
 import { copyAuthFiles } from "../remote/authToken";
 import {
   writeConnectionTokenFile,
@@ -53,6 +61,7 @@ import {
 import {
   ConnectionMonitor,
   type MonitoredConnection,
+  type SocksForward,
 } from "../health/connectionMonitor";
 
 /** A SOCKS forward + server process pair. The monitor updates
@@ -73,7 +82,14 @@ interface RemoteConnection extends MonitoredConnection {
   makeConnection: () => Thenable<any>;
   /** Connection token for reuse on re-resolve. */
   connectionToken: string;
+  /** extensionHostEnv returned by resolve(), for reuse on re-resolve. */
+  extensionHostEnv?: Record<string, string | null>;
 }
+
+/** workspaceState key prefix for the per-window agent link id. */
+const AGENT_LINK_ID_KEY = "zygos.agentLinkId:";
+/** Time allowed for the forward's remote command (incl. shell init) to report. */
+const AGENT_READY_TIMEOUT_MS = 30_000;
 
 const LISTENING_RE = /Extension host agent listening on (\d+)/;
 
@@ -108,13 +124,35 @@ export class SshRemoteResolver {
   private connections = new Map<string, RemoteConnection>();
   /** Label formatters keyed by authority (disposed on reconnect/deactivate). */
   private labelFormatters = new Map<string, vscode.Disposable>();
+  /** Per-window agent link ids keyed by authority (backed by workspaceState). */
+  private agentLinkIds = new Map<string, string>();
 
   constructor(
     private readonly logger: Logger,
     private readonly extensionPath: string,
     private readonly connectionFactory: ConnectionFactory = (dest, opts) =>
       SshConnection.fromDestination(dest, opts),
+    private readonly workspaceState?: vscode.Memento,
   ) {}
+
+  /**
+   * Id of this window's agent symlink for `authority`. Stable across
+   * re-resolves and, via workspaceState, across window reloads, so terminals
+   * that survive a reload (their env is frozen) keep pointing at a link that
+   * gets repointed.
+   */
+  private agentLinkId(authority: string): string {
+    let id = this.agentLinkIds.get(authority);
+    if (id) return id;
+    const key = AGENT_LINK_ID_KEY + authority;
+    id = this.workspaceState?.get<string>(key);
+    if (!id || !/^[0-9a-f]{16}$/.test(id)) {
+      id = crypto.randomBytes(8).toString("hex");
+      void this.workspaceState?.update(key, id);
+    }
+    this.agentLinkIds.set(authority, id);
+    return id;
+  }
 
   async resolve(
     authority: string,
@@ -228,6 +266,9 @@ export class SshRemoteResolver {
       return {
         makeConnection: prev.makeConnection,
         connectionToken: prev.connectionToken,
+        ...(prev.extensionHostEnv
+          ? { extensionHostEnv: prev.extensionHostEnv }
+          : {}),
       };
     }
 
@@ -373,6 +414,11 @@ export class SshRemoteResolver {
     // in one round-trip. Skipped when reusing an existing server.
     let forwardProcess: ChildProcess | undefined;
     let socksPort = 0;
+    const agent: AgentForward = {
+      home: installResult.home,
+      link: agentLinkPath(installResult.home, this.agentLinkId(authority)),
+    };
+    let agentForwarded = false;
     try {
     if (!lockProbe.reusePort) {
       const fin = await finalizeServerStart(
@@ -393,15 +439,20 @@ export class SshRemoteResolver {
       );
     }
 
-    // Open a SOCKS dynamic forward (ssh -D <port> -N). Core calls
+    // Open a SOCKS dynamic forward (ssh -D <port>). Core calls
     // makeConnection() for each server-protocol connection it needs; each
     // call does a SOCKS5 CONNECT to 127.0.0.1:remotePort through this proxy.
+    // The forward also owns this window's forwarded agent socket.
     report("Starting SOCKS forward...");
     socksPort = await findFreePort();
-    forwardProcess = this.startSocksForward(conn, socksPort);
+    const started = this.startSocksForward(conn, socksPort, agent);
+    forwardProcess = started.process;
 
-    // Wait for the SOCKS proxy to be ready.
-    await waitForPort(socksPort, 10_000);
+    // Wait for the SOCKS proxy and the remote agent report.
+    [, agentForwarded] = await Promise.all([
+      waitForPort(socksPort, 10_000),
+      started.agentReady,
+    ]);
     this.logger.info(
       `[resolve] SOCKS proxy on 127.0.0.1:${socksPort} -> remote:${remotePort}`,
     );
@@ -429,6 +480,14 @@ export class SshRemoteResolver {
       makeConnection: undefined as any, // set below
       connectionToken,
       ownsServer: !lockProbe.reusePort,
+      agent,
+      // Terminals get SSH_AUTH_SOCK from the resolver env (VS Code sends it
+      // with every remote terminal create, overriding the server's env), so
+      // each window uses its own symlink. Only set when a forwarded agent
+      // exists, so a remote-local agent isn't overridden.
+      extensionHostEnv: agentForwarded
+        ? { SSH_AUTH_SOCK: agent.link }
+        : undefined,
     };
 
     // Attach exit listeners to detect process death immediately, not minutes
@@ -443,7 +502,7 @@ export class SshRemoteResolver {
       connState,
       {
         findFreePort,
-        startSocksForward: (c, p) => this.startSocksForward(c, p),
+        startSocksForward: (c, p, a) => this.startSocksForward(c, p, a),
         waitForPort,
       },
       this.logger,
@@ -480,7 +539,13 @@ export class SshRemoteResolver {
     };
     connState.makeConnection = makeConnection;
 
-    return { makeConnection, connectionToken };
+    return {
+      makeConnection,
+      connectionToken,
+      ...(connState.extensionHostEnv
+        ? { extensionHostEnv: connState.extensionHostEnv }
+        : {}),
+    };
   }
 
   /**
@@ -731,13 +796,20 @@ export class SshRemoteResolver {
   private startSocksForward(
     conn: SshConnection,
     socksPort: number,
-  ): ChildProcess {
+    agent?: AgentForward,
+  ): SocksForward {
     this.logger.info(`[resolve] starting SOCKS forward -D ${socksPort}`);
 
-    const child = conn.spawnProcess(undefined, [
+    // With an agent role the forward runs a remote command: sshd only
+    // creates a forwarded agent socket for a session, and -N opens none.
+    const agentCmd = agent
+      ? agentForwardCommand(agent.home, agent.link)
+      : undefined;
+
+    const child = conn.spawnProcess(agentCmd?.command, [
       "-D",
       String(socksPort),
-      "-N", // no remote command, just forward
+      ...(agentCmd ? [] : ["-N"]), // -N: no remote command, just forward
       "-o",
       "ServerAliveInterval=15",
       "-o",
@@ -761,7 +833,60 @@ export class SshRemoteResolver {
       this.logger.info(`[resolve] SOCKS forward exited (code=${code})`);
     });
 
-    return child;
+    const agentReady =
+      agent && agentCmd
+        ? this.waitForAgentReady(child, agentCmd.marker, agent.link)
+        : Promise.resolve(false);
+    return { process: child, agentReady };
+  }
+
+  /**
+   * Read the forward's stdout until the agent report after the marker, then
+   * keep draining it (the keep-alive loop writes periodically). Kills the
+   * forward on timeout.
+   */
+  private waitForAgentReady(
+    child: ChildProcess,
+    marker: string,
+    link: string,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+      let buf = "";
+      let settled = false;
+      const settle = (err: Error | undefined, forwarded = false): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        buf = "";
+        if (err) {
+          reject(err);
+          return;
+        }
+        this.logger.info(
+          forwarded
+            ? `[agent] SSH_AUTH_SOCK -> ${link}`
+            : "[agent] no forwarded agent on this connection",
+        );
+        resolve(forwarded);
+      };
+      const timeout = setTimeout(() => {
+        settle(new Error("Timed out waiting for SOCKS forward remote setup"));
+        child.kill("SIGTERM");
+      }, AGENT_READY_TIMEOUT_MS);
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (settled) return; // drain
+        buf += chunk.toString("utf-8");
+        const forwarded = parseAgentForwardReady(buf, marker);
+        if (forwarded !== undefined) settle(undefined, forwarded);
+      });
+      child.once("error", (err) => settle(err));
+      child.once("close", (code) =>
+        settle(
+          new Error(`SOCKS forward exited before remote setup (code=${code})`),
+        ),
+      );
+    });
   }
 
   /**
@@ -808,7 +933,7 @@ export class SshRemoteResolver {
 
       // Start a SOCKS forward for tcpConnect().
       const socksPort = await findFreePort();
-      const forwardProcess = this.startSocksForward(conn, socksPort);
+      const forwardProcess = this.startSocksForward(conn, socksPort).process;
       await waitForPort(socksPort, 10_000);
       this.logger.info(`[resolveExecServer] SOCKS on :${socksPort}`);
 
@@ -836,7 +961,7 @@ export class SshRemoteResolver {
         connState,
         {
           findFreePort,
-          startSocksForward: (c, p) => this.startSocksForward(c, p),
+          startSocksForward: (c, p, a) => this.startSocksForward(c, p, a),
           waitForPort,
         },
         this.logger,
@@ -1006,7 +1131,12 @@ export function registerResolver(
   context: vscode.ExtensionContext,
   logger: Logger,
 ): SshRemoteResolver {
-  const resolver = new SshRemoteResolver(logger, context.extensionPath);
+  const resolver = new SshRemoteResolver(
+    logger,
+    context.extensionPath,
+    undefined,
+    context.workspaceState,
+  );
 
   // Register the resolver. The proposed API is:
   //   vscode.workspace.registerRemoteAuthorityResolver("ssh-remote", resolver)

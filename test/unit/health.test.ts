@@ -147,7 +147,7 @@ describe("ConnectionMonitor", () => {
       conn,
       {
         findFreePort: vi.fn().mockResolvedValue(1081),
-        startSocksForward: vi.fn().mockReturnValue({} as any),
+        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
         waitForPort: vi.fn().mockResolvedValue(undefined),
       },
       mockLogger,
@@ -184,7 +184,7 @@ describe("ConnectionMonitor", () => {
       conn,
       {
         findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue(newForward),
+        startSocksForward: vi.fn().mockReturnValue({ process: newForward, agentReady: Promise.resolve(false) }),
         waitForPort: vi.fn().mockResolvedValue(undefined),
       },
       mockLogger,
@@ -204,6 +204,44 @@ describe("ConnectionMonitor", () => {
     monitor.stop();
   });
 
+  it("passes the agent role to the restarted forward", async () => {
+    const conn = makeMockConnection();
+    conn.forwardProcess = {
+      killed: false,
+      exitCode: 1,
+      signalCode: null,
+    } as any;
+    conn.agent = { home: "/home/u", link: "/home/u/.ssh-remote/agent-x" };
+    (conn.conn.exec as any).mockResolvedValue({ exitCode: 0 });
+    const newForward = {
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+      once: vi.fn(),
+    } as any;
+    const startSocksForward = vi.fn().mockReturnValue({
+      process: newForward,
+      agentReady: Promise.resolve(true),
+    });
+
+    const monitor = new ConnectionMonitor(
+      conn,
+      {
+        findFreePort: vi.fn().mockResolvedValue(2080),
+        startSocksForward,
+        waitForPort: vi.fn().mockResolvedValue(undefined),
+      },
+      mockLogger,
+    );
+    monitor.start();
+
+    await triggerSleepAndProbe();
+
+    expect(startSocksForward).toHaveBeenCalledWith(conn.conn, 2080, conn.agent);
+    expect(conn.forwardProcess).toBe(newForward);
+    monitor.stop();
+  });
+
   it("marks dead when both forward and SSH are dead", async () => {
     const conn = makeMockConnection();
     conn.forwardProcess = {
@@ -217,7 +255,7 @@ describe("ConnectionMonitor", () => {
       conn,
       {
         findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({} as any),
+        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
         waitForPort: vi.fn().mockResolvedValue(undefined),
       },
       mockLogger,
@@ -300,7 +338,7 @@ describe("ConnectionMonitor", () => {
       conn,
       {
         findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue(newForward),
+        startSocksForward: vi.fn().mockReturnValue({ process: newForward, agentReady: Promise.resolve(false) }),
         waitForPort: vi.fn().mockResolvedValue(undefined),
       },
       mockLogger,
@@ -318,7 +356,7 @@ describe("ConnectionMonitor", () => {
 
   it("debounces rapid probes (no double-probe within MIN_PROBE_GAP)", async () => {
     const conn = makeMockConnection();
-    const startSocksForward = vi.fn().mockReturnValue({} as any);
+    const startSocksForward = vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) });
 
     const monitor = new ConnectionMonitor(
       conn,
@@ -355,7 +393,7 @@ describe("ConnectionMonitor", () => {
       conn,
       {
         findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({} as any),
+        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
         waitForPort: vi.fn().mockResolvedValue(undefined),
       },
       mockLogger,

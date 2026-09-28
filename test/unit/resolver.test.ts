@@ -256,6 +256,15 @@ describe("SshRemoteResolver.resolveExecServer - happy path", () => {
     // The fake opened a real TCP listener for -D.
     expect(fake.socksServers.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("keeps -N on the exec-server forward (no agent role)", async () => {
+    await resolver.resolveExecServer(authority("host2"), {
+      resolveAttempt: 1,
+    });
+    const fwd = fake.spawns.find((s) => s.args.includes("-D"))!;
+    expect(fwd.command).toBeUndefined();
+    expect(fwd.args).toContain("-N");
+  });
 });
 
 // --- resolve() happy path ---
@@ -299,6 +308,72 @@ describe("SshRemoteResolver.resolve - happy path", () => {
     expect(statusBarItemsRef.length).toBeGreaterThanOrEqual(1);
     const last = statusBarItemsRef[statusBarItemsRef.length - 1];
     expect(last.disposed).toBe(true);
+  });
+
+  it("runs the agent command on the forward instead of -N", async () => {
+    await resolver.resolve(authority("10.0.0.103"), { resolveAttempt: 1 });
+    const fwd = fake.spawns.find((s) => s.args.includes("-D"))!;
+    expect(fwd.command).toMatch(/ZYAGENT-[0-9a-f]+/);
+    expect(fwd.args).not.toContain("-N");
+  });
+
+  it("sets extensionHostEnv SSH_AUTH_SOCK to the window's link", async () => {
+    const result = await resolver.resolve(authority("10.0.0.104"), {
+      resolveAttempt: 1,
+    });
+    expect(result.extensionHostEnv?.SSH_AUTH_SOCK).toMatch(
+      /^\/home\/testuser\/\.ssh-remote\/agent-[0-9a-f]{16}$/,
+    );
+  });
+
+  it("does not set extensionHostEnv without a forwarded agent", async () => {
+    fake.setAgentReport("");
+    const result = await resolver.resolve(authority("10.0.0.105"), {
+      resolveAttempt: 1,
+    });
+    expect(result.extensionHostEnv).toBeUndefined();
+  });
+
+  it("keeps the same link across re-resolves and reuses", async () => {
+    const auth = authority("10.0.0.106");
+    const first = await resolver.resolve(auth, { resolveAttempt: 1 });
+    // Reuse path (connection still healthy).
+    const reused = await resolver.resolve(auth, { resolveAttempt: 1 });
+    expect(reused.extensionHostEnv).toEqual(first.extensionHostEnv);
+    // Fresh resolve after the connection dies.
+    const connections = (resolver as any).connections as Map<string, any>;
+    connections.get(auth)!.dead = true;
+    const again = await resolver.resolve(auth, { resolveAttempt: 2 });
+    expect(again.extensionHostEnv).toEqual(first.extensionHostEnv);
+  });
+
+  it("persists the link id in workspaceState", async () => {
+    const store = new Map<string, unknown>();
+    const memento = {
+      get: (k: string) => store.get(k),
+      update: async (k: string, v: unknown) => void store.set(k, v),
+    };
+    const auth = authority("10.0.0.107");
+    const r1 = new SshRemoteResolver(
+      noopLogger as any,
+      "/ext/path",
+      () => fake as any,
+      memento as any,
+    );
+    const first = await r1.resolve(auth, { resolveAttempt: 1 });
+    r1.dispose();
+    fake.stopSocksListeners();
+
+    // A new resolver (window reload) reads the same id.
+    const r2 = new SshRemoteResolver(
+      noopLogger as any,
+      "/ext/path",
+      () => fake as any,
+      memento as any,
+    );
+    const second = await r2.resolve(auth, { resolveAttempt: 1 });
+    r2.dispose();
+    expect(second.extensionHostEnv).toEqual(first.extensionHostEnv);
   });
 
   it("makeConnection throws when connection is dead", async () => {
