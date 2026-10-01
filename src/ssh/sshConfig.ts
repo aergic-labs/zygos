@@ -55,16 +55,39 @@ export function getConfigPath(): string {
 export function sshSettings(): {
   sshPath?: string;
   configFile?: string;
+  handshakeTimeoutMs?: number;
+  tcpTimeoutSeconds?: number;
 } {
   const cfg = vscode.workspace.getConfiguration("zygos");
   const expand = (v: string): string =>
     v.startsWith("~/") ? path.join(os.homedir(), v.slice(2)) : v;
   const sshPath = cfg.get<string>("sshPath", "").trim();
   const configFile = cfg.get<string>("configFile", "").trim();
+  const handshakeTimeoutMs = resolveHandshakeMs(
+    cfg.get<number>("handshakeTimeout", 30),
+  );
+  const tcpTimeoutSeconds = resolveTcpSeconds(
+    cfg.get<number>("tcpTimeout", 15),
+  );
   return {
     sshPath: sshPath ? expand(sshPath) : undefined,
     configFile: configFile ? expand(configFile) : undefined,
+    handshakeTimeoutMs,
+    tcpTimeoutSeconds,
   };
+}
+
+/** Convert handshake seconds to ms, clamping bad input to the 30s default. */
+function resolveHandshakeMs(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 30_000;
+  const ms = Math.round(seconds * 1000);
+  return ms >= 1000 ? ms : 30_000;
+}
+
+/** Resolve TCP timeout seconds. 0 = omit (use system default). Bad input falls back to 15. */
+function resolveTcpSeconds(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds < 0) return 15;
+ return Math.round(seconds);
 }
 
 async function fileExists(p: string): Promise<boolean> {

@@ -13,6 +13,7 @@ import {
   resolveHostInput,
   getConfigPath,
   loadSshConfig,
+  sshSettings,
   type HostConfig,
 } from "../../src/ssh/sshConfig";
 import { setConfig, resetConfig } from "../__mocks__/vscode";
@@ -75,6 +76,75 @@ describe("getConfigPath", () => {
     setConfig("zygos.configFile", "~/myconfig");
     const p = getConfigPath();
     expect(p).toBe(path.join(os.homedir(), "myconfig"));
+  });
+});
+
+// --- sshSettings ---
+
+describe("sshSettings", () => {
+  afterEach(() => resetConfig());
+
+  it("returns defaults when nothing is set", () => {
+    resetConfig();
+    const s = sshSettings();
+    expect(s.sshPath).toBeUndefined();
+    expect(s.configFile).toBeUndefined();
+    expect(s.handshakeTimeoutMs).toBe(30_000);
+    expect(s.tcpTimeoutSeconds).toBe(15);
+  });
+
+  it("converts handshake seconds to ms", () => {
+    setConfig("zygos.handshakeTimeout", 160);
+    const s = sshSettings();
+    expect(s.handshakeTimeoutMs).toBe(160_000);
+  });
+
+  it("rounds float handshake seconds", () => {
+    setConfig("zygos.handshakeTimeout", 30.5);
+    const s = sshSettings();
+    expect(s.handshakeTimeoutMs).toBe(30_500);
+  });
+
+  it("falls back to default handshake for zero", () => {
+    setConfig("zygos.handshakeTimeout", 0);
+    const s = sshSettings();
+    expect(s.handshakeTimeoutMs).toBe(30_000);
+  });
+
+  it("falls back to default handshake for negative", () => {
+    setConfig("zygos.handshakeTimeout", -5);
+    const s = sshSettings();
+    expect(s.handshakeTimeoutMs).toBe(30_000);
+  });
+
+  it("falls back to default handshake for NaN", () => {
+    setConfig("zygos.handshakeTimeout", NaN);
+    const s = sshSettings();
+    expect(s.handshakeTimeoutMs).toBe(30_000);
+  });
+
+  it("returns configured tcpTimeout", () => {
+    setConfig("zygos.tcpTimeout", 30);
+    const s = sshSettings();
+    expect(s.tcpTimeoutSeconds).toBe(30);
+  });
+
+  it("returns 0 for tcpTimeout when set to 0", () => {
+    setConfig("zygos.tcpTimeout", 0);
+    const s = sshSettings();
+    expect(s.tcpTimeoutSeconds).toBe(0);
+  });
+
+  it("falls back to default tcpTimeout for negative", () => {
+    setConfig("zygos.tcpTimeout", -1);
+    const s = sshSettings();
+    expect(s.tcpTimeoutSeconds).toBe(15);
+  });
+
+  it("falls back to default tcpTimeout for NaN", () => {
+    setConfig("zygos.tcpTimeout", NaN);
+    const s = sshSettings();
+    expect(s.tcpTimeoutSeconds).toBe(15);
   });
 });
 

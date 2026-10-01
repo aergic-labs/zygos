@@ -43,6 +43,10 @@ export interface SshConnectOptions {
   askpassMain?: string;
   /** Path to node executable (for askpass-main.js). */
   nodePath?: string;
+  /** Max wait (ms) for the initial SSH handshake. Default 30s. */
+  handshakeTimeoutMs?: number;
+  /** TCP-only timeout in seconds (maps to -o ConnectTimeout=N). 0 = omit. */
+  tcpTimeoutSeconds?: number;
 }
 
 /**
@@ -58,6 +62,8 @@ export class SshConnection {
   private readonly askpassScript?: string;
   private readonly askpassMain?: string;
   private readonly nodePath?: string;
+  private readonly handshakeTimeoutMs: number;
+  private readonly tcpTimeoutSeconds: number;
   private connected = false;
 
   constructor(private readonly options: SshConnectOptions) {
@@ -70,6 +76,8 @@ export class SshConnection {
     this.askpassScript = options.askpassScript;
     this.askpassMain = options.askpassMain;
     this.nodePath = options.nodePath;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 30_000;
+    this.tcpTimeoutSeconds = options.tcpTimeoutSeconds ?? 15;
   }
 
   /**
@@ -95,6 +103,17 @@ export class SshConnection {
     return this.label;
   }
 
+  get handshakeTimeout(): number {
+    return this.handshakeTimeoutMs;
+  }
+
+  get tcpTimeout(): number {
+    return this.tcpTimeoutSeconds;
+  }
+
+  /** Floor for connect timeout when askpass is active, so password entry isn't rushed. */
+  private static readonly ASKPASS_CONNECT_FLOOR_MS = 120_000;
+
   /**
    * "Connect" - verifies ssh exists and the host is reachable by running
    * a trivial command. ssh verbose output is logged for diagnostics.
@@ -102,11 +121,29 @@ export class SshConnection {
   async connect(): Promise<void> {
     if (this.connected) return;
     this.logger?.info(`[ssh] connecting to ${this.label}...`);
-    const result = await this.runExec("true", undefined, 15_000);
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `SSH connect to ${this.label} failed: ${result.stderr || `exit code ${result.exitCode}`}`,
-      );
+    const floored = this.askpass && this.handshakeTimeoutMs < SshConnection.ASKPASS_CONNECT_FLOOR_MS;
+    const timeout = this.askpass
+      ? Math.max(this.handshakeTimeoutMs, SshConnection.ASKPASS_CONNECT_FLOOR_MS)
+      : this.handshakeTimeoutMs;
+    const timeoutSeconds = Math.round(timeout / 1000);
+    this.logger?.info(
+      `[ssh] waiting up to ${timeoutSeconds}s for handshake` +
+        (floored ? " (askpass floor applied)" : ""),
+    );
+    try {
+      const result = await this.runExec("true", undefined, timeout, "connect");
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `SSH connect to ${this.label} failed: ${result.stderr || `exit code ${result.exitCode}`}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("timed out")) {
+        throw new Error(
+          `SSH connect to ${this.label} timed out after ${timeoutSeconds}s. Increase zygos.handshakeTimeout if your host uses 2FA.`,
+        );
+      }
+      throw err;
     }
     this.connected = true;
     this.logger?.info(`[ssh] connected to ${this.label}`);
@@ -136,13 +173,13 @@ export class SshConnection {
     command: string,
     stdinData: Buffer | undefined,
     timeoutMs?: number,
+    operation = "exec",
   ): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve, reject) => {
       const args = [
         "-T", // no PTY
         ...this.batchModeArgs(),
-        "-o",
-        "ConnectTimeout=15",
+        ...this.connectTimeoutArgs(),
         ...this.configFileArgs(),
         ...this.extraArgs,
         this.options.host,
@@ -200,8 +237,9 @@ export class SshConnection {
         timeoutHandle = setTimeout(() => {
           if (settled) return;
           settled = true;
+          this.logger?.error(`[ssh] ${operation} timed out after ${timeoutMs}ms`);
           child.kill("SIGTERM");
-          reject(new Error(`SSH exec timed out after ${timeoutMs}ms`));
+          reject(new Error(`SSH ${operation} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }
 
@@ -239,8 +277,7 @@ export class SshConnection {
     const args = [
       "-T",
       ...this.batchModeArgs(),
-      "-o",
-      "ConnectTimeout=15",
+      ...this.connectTimeoutArgs(),
       ...this.configFileArgs(),
       ...this.extraArgs,
       ...extraArgs,
@@ -264,8 +301,7 @@ export class SshConnection {
     return [
       "-T",
       ...this.batchModeArgs(),
-      "-o",
-      "ConnectTimeout=15",
+      ...this.connectTimeoutArgs(),
       ...this.configFileArgs(),
       ...this.extraArgs,
       this.options.host,
@@ -279,6 +315,13 @@ export class SshConnection {
    */
   private batchModeArgs(): string[] {
     return this.askpass ? [] : ["-o", "BatchMode=yes"];
+  }
+
+  /** -o ConnectTimeout=N when tcpTimeout > 0, otherwise nothing (system default). */
+  private connectTimeoutArgs(): string[] {
+    return this.tcpTimeoutSeconds > 0
+      ? ["-o", `ConnectTimeout=${this.tcpTimeoutSeconds}`]
+      : [];
   }
 
   /** -F <path> when a custom config file is set, otherwise nothing. */

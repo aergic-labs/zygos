@@ -712,10 +712,13 @@ export class SshRemoteResolver {
    * expansion. Empty values fall back to ssh defaults.
    */
   private connectionExtras(): Partial<SshConnectOptions> {
-    const { sshPath, configFile } = sshSettings();
+    const { sshPath, configFile, handshakeTimeoutMs, tcpTimeoutSeconds } =
+      sshSettings();
     const extras: Partial<SshConnectOptions> = {};
     if (sshPath) extras.sshPath = sshPath;
     if (configFile) extras.configFile = configFile;
+    if (handshakeTimeoutMs) extras.handshakeTimeoutMs = handshakeTimeoutMs;
+    if (tcpTimeoutSeconds !== undefined) extras.tcpTimeoutSeconds = tcpTimeoutSeconds;
     return extras;
   }
 

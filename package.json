@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -303,6 +303,20 @@
           "default": "",
           "description": "HTTPS proxy URL to forward to the remote server. Empty = no proxy forwarding.",
           "order": 19
+        },
+        "zygos.handshakeTimeout": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Total timeout in seconds for the complete connection sequence, including authentication and 2FA prompts.",
+          "order": 20
+        },
+        "zygos.tcpTimeout": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "Maximum time in seconds to wait for the initial TCP connection to establish. Set to 0 to use the system default.",
+          "order": 21
         }
       }
     }

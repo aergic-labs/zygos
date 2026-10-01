@@ -122,3 +122,51 @@ describe("SshConnection.isConnected", () => {
     expect(conn.isConnected).toBe(false);
   });
 });
+
+describe("SshConnection.handshakeTimeout", () => {
+  it("defaults to 30000", () => {
+    const conn = SshConnection.fromDestination({ host: "h" });
+    expect(conn.handshakeTimeout).toBe(30_000);
+  });
+
+  it("uses configured value", () => {
+    const conn = SshConnection.fromDestination(
+      { host: "h" },
+      { handshakeTimeoutMs: 160_000 },
+    );
+    expect(conn.handshakeTimeout).toBe(160_000);
+  });
+});
+
+describe("SshConnection.tcpTimeout", () => {
+  it("defaults to 15", () => {
+    const conn = SshConnection.fromDestination({ host: "h" });
+    expect(conn.tcpTimeout).toBe(15);
+  });
+
+  it("uses configured value", () => {
+    const conn = SshConnection.fromDestination(
+      { host: "h" },
+      { tcpTimeoutSeconds: 30 },
+    );
+    expect(conn.tcpTimeout).toBe(30);
+  });
+
+  it("passes ConnectTimeout=N when tcpTimeout > 0", () => {
+    const conn = SshConnection.fromDestination(
+      { host: "h" },
+      { tcpTimeoutSeconds: 20 },
+    );
+    expect(conn.buildExecArgs("true")).toContain("ConnectTimeout=20");
+  });
+
+  it("omits ConnectTimeout when tcpTimeout is 0", () => {
+    const conn = SshConnection.fromDestination(
+      { host: "h" },
+      { tcpTimeoutSeconds: 0 },
+    );
+    const args = conn.buildExecArgs("true");
+    expect(args).not.toContain("ConnectTimeout=15");
+    expect(args.some((a) => a.startsWith("ConnectTimeout="))).toBe(false);
+  });
+});

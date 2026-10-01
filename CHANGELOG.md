@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.10]
+
+### Added
+
+- New `zygos.handshakeTimeout` setting (default 30s, was hardcoded 15s) for the full SSH handshake including 2FA. When askpass is active, the floor is 2min so password entry isn't rushed.
+- New `zygos.tcpTimeout` setting (default 15s, 0 = system default) for the TCP-only connection phase, passed as `-o ConnectTimeout=N`.
+
 ## [0.4.9]
 
 ### Fixed
