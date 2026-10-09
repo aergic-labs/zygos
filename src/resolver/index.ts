@@ -827,13 +827,19 @@ export class SshRemoteResolver {
       "ExitOnForwardFailure=yes",
     ]);
 
+    let stderrBuf = "";
     child.stderr?.on("data", (chunk: Buffer) => {
       const line = chunk.toString("utf-8").trim();
       if (line) this.logger.debug(`[socks] ${line}`);
+      stderrBuf += chunk.toString("utf-8");
+      if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-4000);
     });
 
     child.on("close", (code) => {
-      this.logger.info(`[resolve] SOCKS forward exited (code=${code})`);
+      const tail = stderrBuf.trim().slice(-2000);
+      this.logger.info(
+        `[resolve] SOCKS forward exited (code=${code})${tail ? `: ${tail}` : ""}`,
+      );
     });
 
     const agentReady =
