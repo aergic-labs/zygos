@@ -57,6 +57,26 @@ export function initVscodiumFeed(opts: {
 }
 
 /**
+ * Return the newest version from the bundled versions.json (sorted
+ * descending, so [0] is the highest). Used as the fallback when
+ * product.json has no version (e.g., unrecognized IDE on the vscodium
+ * VSIX) so the REH download URL points at a tarball that exists
+ * instead of 404ing on "0.0.0".
+ */
+export function getNewestBundledVersion(): string | undefined {
+  if (!bundledPath) return undefined;
+  try {
+    const arr = JSON.parse(fs.readFileSync(bundledPath, "utf-8"));
+    if (Array.isArray(arr) && typeof arr[0] === "string") {
+      return arr[0];
+    }
+  } catch {
+    // Bundled file missing or corrupt.
+  }
+  return undefined;
+}
+
+/**
  * Resolve the nearest VSCodium release version `<=` localVersion.
  * Returns empty string on any failure (network, parse, no match).
  */
