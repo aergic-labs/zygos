@@ -9,15 +9,15 @@ import {
   removeConnectionTokenFile,
 } from "../../src/remote/connectionToken";
 import {
-  FakeSshConnection,
+  MockSshConnection,
   ok,
   fail,
   noopLogger,
-} from "../__mocks__/fakeSshConnection";
+} from "../__mocks__/mockSshConnection";
 
 describe("writeConnectionTokenFile", () => {
   it("writes token via bbExecWithStdin and returns the path", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     const path = await writeConnectionTokenFile(
       conn as any,
@@ -33,7 +33,7 @@ describe("writeConnectionTokenFile", () => {
   });
 
   it("throws when write fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setResponse("cat", fail("permission denied"));
     await expect(
@@ -49,7 +49,7 @@ describe("writeConnectionTokenFile", () => {
 
 describe("removeConnectionTokenFile", () => {
   it("calls rm -f on the token file", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     await removeConnectionTokenFile(
       conn as any,
@@ -61,10 +61,10 @@ describe("removeConnectionTokenFile", () => {
   });
 
   it("does not throw when rm fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setResponse("rm", fail("no such file"));
-    // Should not throw - best-effort cleanup
+    // Should not throw: best-effort cleanup
     await expect(
       removeConnectionTokenFile(
         conn as any,
@@ -75,7 +75,7 @@ describe("removeConnectionTokenFile", () => {
   });
 
   it("does not throw when rm throws", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.exec = async () => {
       throw new Error("connection lost");

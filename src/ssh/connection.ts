@@ -25,7 +25,7 @@ export interface ExecResult {
 }
 
 export interface SshConnectOptions {
-  /** Host alias or user@host:port - passed directly to ssh. */
+  /** Host alias or user@host:port, passed directly to ssh. */
   host: string;
   /** Custom ssh binary path. Defaults to "ssh". */
   sshPath?: string;
@@ -47,12 +47,37 @@ export interface SshConnectOptions {
   handshakeTimeoutMs?: number;
   /** TCP-only timeout in seconds (maps to -o ConnectTimeout=N). 0 = omit. */
   tcpTimeoutSeconds?: number;
+  /** Local SOCKS5 port for the session's ssh -D. Only used by SshSession. */
+  socksPort?: number;
+}
+
+/**
+ * Interface for an SSH connection. Backed by either the system ssh binary
+ * (SshConnection) or a persistent local server (SshSession).
+ */
+export interface ISshConnection {
+  connect(): Promise<void>;
+  exec(command: string, timeoutMs?: number, quiet?: boolean): Promise<ExecResult>;
+  execWithStdin(command: string, stdinData: Buffer): Promise<ExecResult>;
+  spawnProcess(command: string | undefined, extraArgs?: string[]): ChildProcess;
+  close(): Promise<void>;
+  readonly isConnected: boolean;
+  readonly remoteLabel: string;
+  /** Write a file to the remote. Optional; session connections implement this
+ * instead of using spawnProcess + stdin for binary writes. */
+  putFile?(remotePath: string, content: Buffer, mode?: string): Promise<ExecResult>;
+  /** Actual SOCKS port (session only). Read after connect(). */
+  getSocksPort?(): number;
+  /** Inject the SshTunnel client (session only). When set, putFile and
+ *  execWithStdin route through the tunnel (binary) instead of the
+ *  base64 control-shell hack. */
+  setTunnelClient?(client: unknown): void;
 }
 
 /**
  * SSH connection backed by the system ssh binary.
  */
-export class SshConnection {
+export class SshConnection implements ISshConnection {
   private readonly label: string;
   private readonly sshPath: string;
   private readonly configFile?: string;
@@ -82,7 +107,7 @@ export class SshConnection {
 
   /**
    * Build a connection from a destination + overrides.
-   * For subprocess mode, the destination is just the host string.
+   * For subprocess mode, the destination is the host string.
    */
   static fromDestination(
     dest: { host: string; user?: string; port?: number },
@@ -115,7 +140,7 @@ export class SshConnection {
   private static readonly ASKPASS_CONNECT_FLOOR_MS = 120_000;
 
   /**
-   * "Connect" - verifies ssh exists and the host is reachable by running
+   * "Connect": verifies ssh exists and the host is reachable by running
    * a trivial command. ssh verbose output is logged for diagnostics.
    */
   async connect(): Promise<void> {
@@ -150,7 +175,7 @@ export class SshConnection {
   }
 
   /** Exec a command on the remote. */
-  async exec(command: string, timeoutMs?: number): Promise<ExecResult> {
+  async exec(command: string, timeoutMs?: number, _quiet?: boolean): Promise<ExecResult> {
     this.requireConnected();
     return this.runExec(command, undefined, timeoutMs);
   }
@@ -166,7 +191,7 @@ export class SshConnection {
    *
    * -v sends ssh debug output to stderr, which is logged.
    * -T disables pseudo-terminal.
-   * BatchMode=yes prevents hanging on interactive prompts - fail fast instead.
+   * BatchMode=yes prevents hanging on interactive prompts: fail fast instead.
    *   Dropped when askpass is enabled (ssh prompts for passwords then).
    */
   private runExec(
@@ -202,7 +227,7 @@ export class SshConnection {
       child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
 
       if (stdinData) {
-        // Write in chunks with backpressure handling - a single write() of
+        // Write in chunks with backpressure handling: a single write() of
         // 188MB can stall the stream. Write 64KB at a time, wait for 'drain'
         // when the internal buffer is full, then end stdin.
         const CHUNK = 64 * 1024;

@@ -29,7 +29,7 @@
 import type { ChildProcess } from "node:child_process";
 import * as vscode from "vscode";
 import type { Logger } from "../common/logger";
-import type { SshConnection } from "../ssh/connection";
+import type { ISshConnection } from "../ssh/connection";
 import type { AgentForward } from "../remote/busybox";
 import { SleepDetector } from "./sleepDetector";
 
@@ -48,7 +48,11 @@ export interface MonitoredConnection {
   /** The server child process. */
   serverProcess: ChildProcess | undefined;
   /** SSH connection used for exec probes and forward restart. */
-  conn: SshConnection;
+  conn: ISshConnection;
+  /** Set to true when the connection is backed by the ssh session. The
+   * monitor skips forward-repair (the forward lives inside the
+   * session's ssh child); a dead ssh means a full reconnect. */
+  isSession?: boolean;
   /** Set to true when the connection is unrecoverable. makeConnection() fast-fails. */
   dead: boolean;
   /** If false, we are reusing another window's server. Don't check serverProcess liveness. */
@@ -74,7 +78,7 @@ export interface ConnectionMonitorDeps {
   findFreePort(): Promise<number>;
   /** Start a new SOCKS forward. */
   startSocksForward(
-    conn: SshConnection,
+    conn: ISshConnection,
     socksPort: number,
     agent?: AgentForward,
   ): SocksForward;
@@ -92,6 +96,8 @@ export class ConnectionMonitor {
   private lastProbeAt = 0;
   private inFlight: Promise<void> | undefined;
   private readonly disposables: vscode.Disposable[] = [];
+  /** Last status reported via onStatus, to suppress duplicate logs. */
+  private lastStatus = "";
 
   constructor(
     private readonly conn: MonitoredConnection,
@@ -99,6 +105,13 @@ export class ConnectionMonitor {
     private readonly logger: Logger,
     private readonly onStatus?: (msg: string) => void,
   ) {}
+
+  /** Report status only when it changes, so periodic probes don't spam the log. */
+  private reportStatus(msg: string): void {
+    if (msg === this.lastStatus) return;
+    this.lastStatus = msg;
+    this.onStatus?.(msg);
+  }
 
   start(): void {
     this.detector.onSleep((sleptMs) => this.onSleep(sleptMs));
@@ -143,7 +156,7 @@ export class ConnectionMonitor {
     this.logger.info(
       `[health] sleep detected (~${sleptSec}s), probing connection...`,
     );
-    this.onStatus?.(`Restoring after sleep (~${sleptSec}s)...`);
+    this.reportStatus(`Restoring after sleep (~${sleptSec}s)...`);
     await this.triggerProbe("sleep");
   }
 
@@ -197,38 +210,51 @@ export class ConnectionMonitor {
   private async probeAndRepair(): Promise<void> {
     if (this.conn.dead) return;
 
+    // Session connections: the forward lives inside the ssh child. No
+    // in-place repair possible. Probe ssh; dead = full reconnect.
+    if (this.conn.isSession) {
+      if (await this.sshAlive()) {
+        this.reportStatus("Connected");
+      } else {
+        this.logger.info("[health] ssh session unreachable, marking dead");
+        this.conn.dead = true;
+        this.reportStatus("Reconnecting...");
+      }
+      return;
+    }
+
     const forwardAlive = isAlive(this.conn.forwardProcess);
     const serverAlive = this.conn.ownsServer
       ? isAlive(this.conn.serverProcess)
       : true;
 
-    this.logger.info(
-      `[health] probe forwardAlive=${forwardAlive} serverAlive=${serverAlive} ownsServer=${this.conn.ownsServer}`,
-    );
-
     if (forwardAlive && serverAlive) {
-      // Both processes look alive. Verify SSH is actually responsive with a
-      // quick exec. If the OS killed the TCP connection, the processes may
-      // still report "alive" but are zombie shells.
+      // Both processes look alive. Verify SSH is responsive with a quick
+      // exec. If the OS killed the TCP connection, the processes may still
+      // report "alive" but are zombie shells.
       if (await this.sshAlive()) {
-        this.onStatus?.("Connected");
+        this.reportStatus("Connected");
         return;
       }
       // SSH is dead - can't repair.
       this.logger.info("[health] SSH probe failed after sleep, marking dead");
       this.conn.dead = true;
-      this.onStatus?.("Reconnecting...");
+      this.reportStatus("Reconnecting...");
       return;
     }
 
     // At least one process is dead. Check if SSH itself still works
     // before attempting repairs.
+    this.logger.info(
+      `[health] probe forwardAlive=${forwardAlive} serverAlive=${serverAlive} ownsServer=${this.conn.ownsServer}`,
+    );
+
     if (!(await this.sshAlive())) {
       this.logger.info(
         "[health] SSH unreachable, cannot repair - marking dead",
       );
       this.conn.dead = true;
-      this.onStatus?.("Reconnecting...");
+      this.reportStatus("Reconnecting...");
       return;
     }
 
@@ -244,7 +270,7 @@ export class ConnectionMonitor {
           `[health] SOCKS forward restart failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         this.conn.dead = true;
-        this.onStatus?.("Reconnecting...");
+        this.reportStatus("Reconnecting...");
         return;
       }
     }
@@ -254,11 +280,11 @@ export class ConnectionMonitor {
       // exec + port parse). Mark dead; core re-resolves.
       this.logger.info("[health] server process dead, marking for reconnect");
       this.conn.dead = true;
-      this.onStatus?.("Reconnecting...");
+      this.reportStatus("Reconnecting...");
       return;
     }
 
-    this.onStatus?.("Connected");
+    this.reportStatus("Connected");
   }
 
   private async restartForward(): Promise<void> {
@@ -275,7 +301,7 @@ export class ConnectionMonitor {
       started.agentReady,
     ]);
 
-    // Kill the old process if it's somehow still around.
+    // Kill the old process if still around.
     try {
       this.conn.forwardProcess?.kill("SIGTERM");
     } catch {

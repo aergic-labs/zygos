@@ -13,7 +13,7 @@
  *
  * After bootstrap, everything runs through the vendored busybox sh with
  * busybox tools at the front of PATH. The server tarball is downloaded
- * client-side and streamed over SSH stdin - the remote makes no HTTP
+ * client-side and streamed over SSH stdin: the remote makes no HTTP
  * requests and needs no wget/curl.
  *
  * Install path layout (MS/Kiro convention):
@@ -21,7 +21,7 @@
  *     node, <server-app>, ...
  */
 
-import type { SshConnection } from "../ssh/connection";
+import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import type { PlatformAdapter, ProductInfo } from "../platform/types";
 import { buildServerDownloadUrl } from "./url";
@@ -47,7 +47,7 @@ export interface InstallResult {
 }
 
 export interface InstallOptions {
-  /** OS to download for. Defaults to "linux" (macOS reserved - see research/08). */
+  /** OS to download for. Defaults to "linux" (macOS reserved; see research/08). */
   os?: string;
   /** Called with download progress (bytes received, total bytes). */
   onDownloadProgress?: DownloadProgressFn;
@@ -69,7 +69,7 @@ export interface InstallOptions {
  * Worst case (fresh install, no busybox): 4 SSH calls.
  */
 export async function ensureServerInstalled(
-  conn: SshConnection,
+  conn: ISshConnection,
   adapter: PlatformAdapter,
   productInfo: ProductInfo,
   logger: Logger,
@@ -164,19 +164,49 @@ export async function ensureServerInstalled(
     logger.info(`[install] checksum verification disabled by setting`);
   }
 
-  // --- 4. mkdir + extract (single call, streams tarball over stdin) ---
+  // --- 4. mkdir + extract ---
   options?.onPhase?.("extracting");
-  logger.info(`[install] extracting to ${installPath}...`);
   // --strip-components=1 drops the top-level <server-app>-<os>-<arch>/ dir.
   // mkdir is folded in so we don't need a separate call.
-  const extractCmd =
-    `mkdir -p ${shellQuote(installPath)} && ` +
-    `gzip -d | tar -xC ${shellQuote(installPath)} --strip-components=1`;
-  const extractResult = await bbExecWithStdin(conn, probe.home, extractCmd, tarball);
-  if (extractResult.exitCode !== 0) {
-    throw new Error(
-      `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,
+  //
+  // Session path: conn.putFile (binary /put-file) uploads the tarball to
+  // a temp path, then we exec the extract reading from that file. This
+  // avoids base64-encoding the entire tarball through the control shell
+  // (SshSession.execWithStdin), which stalls for 30-40s on a ~50MB
+  // tarball with no log output.
+  //
+  // Raw SSH path: execWithStdin streams the tarball over SSH stdin
+  // directly (fast). No putFile available, so we use bbExecWithStdin.
+  const tarMb = (tarball.length / 1_048_576).toFixed(1);
+  if (conn.putFile) {
+    const tmpDir = `${probe.home}/.ssh-remote`;
+    const tmpTarball = `${tmpDir}/server-${productInfo.commit}.tar.gz`;
+    logger.info(
+      `[install] uploading tarball (${tarMb} MB) to ${tmpTarball}...`,
     );
+    await conn.putFile(tmpTarball, tarball, "0600");
+    logger.info(`[install] extracting to ${installPath}...`);
+    const extractCmd =
+      `mkdir -p ${shellQuote(installPath)} && ` +
+      `gzip -dc ${shellQuote(tmpTarball)} | tar -xC ${shellQuote(installPath)} --strip-components=1 && ` +
+      `rm -f ${shellQuote(tmpTarball)}`;
+    const extractResult = await bbExec(conn, probe.home, extractCmd);
+    if (extractResult.exitCode !== 0) {
+      throw new Error(
+        `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,
+      );
+    }
+  } else {
+    logger.info(`[install] extracting to ${installPath}... (${tarMb} MB)`);
+    const extractCmd =
+      `mkdir -p ${shellQuote(installPath)} && ` +
+      `gzip -d | tar -xC ${shellQuote(installPath)} --strip-components=1`;
+    const extractResult = await bbExecWithStdin(conn, probe.home, extractCmd, tarball);
+    if (extractResult.exitCode !== 0) {
+      throw new Error(
+        `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,
+      );
+    }
   }
 
   // --- 5. Patch commit + verify node (single call) ---

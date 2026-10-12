@@ -6,11 +6,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { ensureServerInstalled } from "../../src/remote/install";
 import {
-  FakeSshConnection,
+  MockSshConnection,
   ok,
   fail,
   noopLogger,
-} from "../__mocks__/fakeSshConnection";
+} from "../__mocks__/mockSshConnection";
 import type { PlatformAdapter, ProductInfo } from "../../src/platform/types";
 
 // Mock downloadToBuffer so the install flow can reach extraction + patching
@@ -58,7 +58,7 @@ function makeProductInfo(): ProductInfo {
 
 describe("ensureServerInstalled", () => {
   it("probes and returns early when server is already installed", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setProbeResponse("/home/user", "x86_64", "yes", "yes");
     conn.setDefault(ok());
@@ -81,7 +81,7 @@ describe("ensureServerInstalled", () => {
     // Host provisioned by another extension: server present, busybox
     // missing. Without the fix, the early return skipped bootstrap and
     // every later bbExec call failed with exit 127.
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setProbeResponse("/home/user", "x86_64", "no", "yes");
     conn.setDefault(ok());
@@ -101,7 +101,7 @@ describe("ensureServerInstalled", () => {
   });
 
   it("completes the install when server needs install", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     // Probe: busybox present, install absent
     conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
@@ -123,7 +123,7 @@ describe("ensureServerInstalled", () => {
   });
 
   it("throws when arch is unsupported", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setProbeResponse("/home/user", "mips", "no", "no");
     conn.setDefault(ok());
@@ -140,7 +140,7 @@ describe("ensureServerInstalled", () => {
   });
 
   it("patches the extracted product.json commit to match the IDE", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     // The combined patch+verify call: sed -n returns a different commit,
@@ -173,7 +173,7 @@ describe("ensureServerInstalled", () => {
   });
 
   it("includes a commit-match guard in the patch+verify command", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     conn.setResponse("sed -n", ok("abc123"));

@@ -19,18 +19,15 @@ export class KiroAdapter implements PlatformAdapter {
   readonly serverApplicationName = "kiro-server";
 
   /**
-   * Read the Kiro SSO token (and, when present, the client-registration
-   * sibling named by `clientIdHash`) from the client for forwarding to
-   * the remote.
+   * Read the Kiro SSO token, plus the client-registration sibling named
+   * by `clientIdHash` when present, for forwarding to the remote.
    *
-   * Always forwards the token file when present — it works until expiry
-   * even without the registration sibling. The registration file holds
-   * the clientId/clientSecret the remote needs to refresh on its own;
-   * without it, the remote signs out ~1h in (zygos issue #4).
+   * The token alone works until expiry. The sibling holds the
+   * clientId/clientSecret the remote needs to refresh on its own; without
+   * it the remote signs out ~1h in (zygos issue #4).
    *
-   * Resilient: if the token JSON can't be parsed or the sibling file is
-   * missing, returns just the token. Many Kiro auth methods don't use
-   * SSO refresh and may not produce the sibling.
+   * Missing sibling or unparseable token JSON: return the token alone.
+   * Not all Kiro auth methods produce the sibling.
    */
   readAuthFiles(): { path: string; content: string }[] {
     const cacheDir = path.join(os.homedir(), ".aws", "sso", "cache");

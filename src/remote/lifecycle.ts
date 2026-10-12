@@ -18,7 +18,7 @@
  *   .resolve-lock/ - mkdir-based lock for concurrent resolve protection
  */
 
-import type { SshConnection } from "../ssh/connection";
+import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import { bbExec, shellQuote } from "./busybox";
 
@@ -61,7 +61,7 @@ export interface FinalizeResult {
  * in between.
  */
 export async function cleanupZombieServer(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
 ): Promise<ZombieResult> {
@@ -130,7 +130,7 @@ export async function cleanupZombieServer(
  * and a `log` string.
  */
 export async function finalizeServerStart(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   port: number,
@@ -141,8 +141,8 @@ export async function finalizeServerStart(
   const lockDir = `${installPath}/.resolve-lock`;
 
   const lines: string[] = [
-    `pid=$(pgrep -f -o ${shellQuote(`${installPath}/node`)} 2>/dev/null)`,
-    `if [ -z "$pid" ]; then pid=$(pgrep -f -o ${shellQuote(installPath)} 2>/dev/null); fi`,
+    `pid=$(pgrep -f -o ${shellQuote(`${installPath}/out/server-main.js`)} 2>/dev/null)`,
+    `if [ -z "$pid" ]; then pid=$(pgrep -f -o ${shellQuote(`${installPath}/node`)} 2>/dev/null); fi`,
     `if [ -n "$pid" ]; then echo $pid > ${shellQuote(pidFile)} && echo ${port} > ${shellQuote(portFile)}; fi`,
   ];
   if (opts.releaseLock) {
@@ -190,7 +190,7 @@ export interface LockProbeResult {
  * runs inside the lock. Returns a `LockProbeResult`.
  */
 export async function acquireLockAndProbeZombie(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
 ): Promise<LockProbeResult> {
@@ -276,7 +276,7 @@ export async function acquireLockAndProbeZombie(
  * Called after the server starts and the port is parsed.
  */
 export async function writeServerMetadata(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   pid: number,
@@ -302,7 +302,7 @@ export async function writeServerMetadata(
  * Remove the server metadata files. Called on clean shutdown.
  */
 export async function removeServerMetadata(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   logger: Logger,
@@ -326,7 +326,7 @@ export async function removeServerMetadata(
  * Stale detection: PID-liveness check + age timeout (LOCK_STALE_AGE_SEC).
  */
 export async function acquireResolveLock(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   logger: Logger,
@@ -353,7 +353,7 @@ export async function acquireResolveLock(
   // crashed resolve. Reclaim purely on age: there is no persistent remote
   // process to check PID-liveness against (the resolve driver runs locally in
   // the extension host, so `$$` inside a one-shot `sh -c` was the PID of a
-  // shell that had already exited - a liveness check on it always reported
+  // shell that had already exited; a liveness check on it always reported
   // "dead", which made a live lock look reclaimable and defeated mutual
   // exclusion). Age-based reclaim + atomic mkdir is the correct guarantee.
   logger.info(`[lifecycle] resolve lock exists, checking age`);
@@ -378,7 +378,7 @@ export async function acquireResolveLock(
  * Release the resolve lock. Best-effort.
  */
 export async function releaseResolveLock(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   logger: Logger,
@@ -390,35 +390,36 @@ export async function releaseResolveLock(
 
 /**
  * Find the PID of the remote server process running from the given install
- * path. The SSH child process spawned locally isn't the server PID - the
+ * path. The SSH child process spawned locally isn't the server PID; the
  * server is a node process on the remote. Probed via pgrep matching the
  * install path in the process args.
  *
  * Returns the PID, or undefined if not found.
  */
 export async function probeServerPid(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   installPath: string,
   logger: Logger,
 ): Promise<number | undefined> {
   // A bare install-path match also matches the busybox `sh` wrappers that
-  // launched the server (`sh -c '... .../bin/<server> --start-server ...'`).
-  // Those shells have lower PIDs, so taking the first pgrep line returned the
-  // wrapper, not the node server. Match the server's node binary specifically
-  // and take the oldest such process with `-o` (the main server, not its
-  // forked workers). Fall back to the broad match for launchers that don't
-  // exec `<installPath>/node` directly.
+  // launched the server (`sh -c '... .../bin/<server> --start-server ...'`),
+  // and `<installPath>/node` also matches the sshTunnel / extensionHost /
+  // fileWatcher node processes. Neither is unique to the server. The server's
+  // node binary is launched with `out/server-main.js` as its script, which no
+  // other process under the install path uses, so match that specifically.
+  // Fall back to `<installPath>/node` for launchers that don't exec the
+  // script directly.
   let result = await bbExec(
     conn,
     home,
-    `pgrep -f -o ${shellQuote(`${installPath}/node`)} 2>/dev/null`,
+    `pgrep -f -o ${shellQuote(`${installPath}/out/server-main.js`)} 2>/dev/null`,
   );
   if (result.exitCode !== 0 || !result.stdout.trim()) {
     result = await bbExec(
       conn,
       home,
-      `pgrep -f -o ${shellQuote(installPath)} 2>/dev/null`,
+      `pgrep -f -o ${shellQuote(`${installPath}/node`)} 2>/dev/null`,
     );
   }
   if (result.exitCode !== 0 || !result.stdout.trim()) {

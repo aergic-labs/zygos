@@ -42,11 +42,11 @@ import {
 } from "../../src/resolver/index";
 import { encodeAuthority } from "../../src/ssh/destination";
 import {
-  FakeSshConnection,
+  MockSshConnection,
   ok,
   fail,
   noopLogger,
-} from "../__mocks__/fakeSshConnection";
+} from "../__mocks__/mockSshConnection";
 import {
   setConfig,
   resetConfig,
@@ -63,14 +63,14 @@ function authority(dest: string): string {
   return "ssh-remote+" + encodeAuthority({ host: dest });
 }
 
-/** Create a resolver with a FakeSshConnection factory. */
-function makeResolver(fake: FakeSshConnection): SshRemoteResolver {
+/** Create a resolver with a MockSshConnection factory. */
+function makeResolver(fake: MockSshConnection): SshRemoteResolver {
   const factory: ConnectionFactory = () => fake as any;
   return new SshRemoteResolver(noopLogger as any, "/ext/path", factory);
 }
 
-/** Configure a FakeSshConnection with responses for the full resolve() flow. */
-function configureForResolve(fake: FakeSshConnection, listenPort = 9876): void {
+/** Configure a MockSshConnection with responses for the full resolve() flow. */
+function configureForResolve(fake: MockSshConnection, listenPort = 9876): void {
   // probeRemote: home, arch, busybox, installed (nonce-marker format)
   fake.setProbeResponse("/home/testuser", "x86_64", "yes", "yes");
   fake.setResponse("echo ok", ok("ok"));
@@ -103,7 +103,7 @@ describe("findFreePort", () => {
 
   it("the returned port is initially free (can be bound)", async () => {
     const port = await findFreePort();
-    const srv = net.createServer();
+    const srv: net.Server = net.createServer();
     await new Promise<void>((resolve, reject) => {
       srv.listen(port, "127.0.0.1", resolve);
       srv.on("error", reject);
@@ -187,7 +187,7 @@ describe("SshRemoteResolver.resolve - error paths", () => {
   beforeEach(() => {
     resetConfig();
     resetStatusBarItems();
-    resolver = makeResolver(new FakeSshConnection());
+    resolver = makeResolver(new MockSshConnection());
   });
 
   it("throws for an authority without +", async () => {
@@ -210,7 +210,7 @@ describe("SshRemoteResolver.resolveExecServer - error paths", () => {
 
   beforeEach(() => {
     resetConfig();
-    resolver = makeResolver(new FakeSshConnection());
+    resolver = makeResolver(new MockSshConnection());
   });
 
   it("throws for an authority without +", async () => {
@@ -224,12 +224,12 @@ describe("SshRemoteResolver.resolveExecServer - error paths", () => {
 
 describe("SshRemoteResolver.resolveExecServer - happy path", () => {
   let resolver: SshRemoteResolver;
-  let fake: FakeSshConnection;
+  let fake: MockSshConnection;
 
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    fake = new FakeSshConnection();
+    fake = new MockSshConnection();
     resolver = makeResolver(fake);
   });
 
@@ -271,12 +271,12 @@ describe("SshRemoteResolver.resolveExecServer - happy path", () => {
 
 describe("SshRemoteResolver.resolve - happy path", () => {
   let resolver: SshRemoteResolver;
-  let fake: FakeSshConnection;
+  let fake: MockSshConnection;
 
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    fake = new FakeSshConnection();
+    fake = new MockSshConnection();
     configureForResolve(fake);
     resolver = makeResolver(fake);
   });
@@ -390,12 +390,12 @@ describe("SshRemoteResolver.resolve - happy path", () => {
 
 describe("SshRemoteResolver.dispose", () => {
   let resolver: SshRemoteResolver;
-  let fake: FakeSshConnection;
+  let fake: MockSshConnection;
 
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    fake = new FakeSshConnection();
+    fake = new MockSshConnection();
     configureForResolve(fake, 5555);
     resolver = makeResolver(fake);
   });
@@ -420,7 +420,7 @@ describe("SshRemoteResolver.dispose", () => {
   it("handles multiple connections", async () => {
     await resolver.resolve(authority("h1"), { resolveAttempt: 1 });
     // Need a fresh fake for the second resolve (different SOCKS port).
-    const fake2 = new FakeSshConnection();
+    const fake2 = new MockSshConnection();
     configureForResolve(fake2, 7777);
     // Replace the factory to use fake2.
     (resolver as any).connectionFactory = () => fake2 as any;
@@ -447,6 +447,7 @@ describe("registerResolver", () => {
   it("registers the resolver under ssh-remote scheme", () => {
     const fakeContext = {
       extensionPath: "/ext",
+      globalStorageUri: { fsPath: "/ext/storage" },
       subscriptions: [] as Array<{ dispose(): void }>,
     };
     const resolver = registerResolver(fakeContext as any, noopLogger as any);

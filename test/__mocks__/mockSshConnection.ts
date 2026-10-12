@@ -13,9 +13,9 @@
 
 import { EventEmitter } from "node:events";
 import * as net from "node:net";
-import type { ExecResult, SshConnectOptions } from "../../src/ssh/connection";
+import type { ExecResult, ISshConnection, SshConnectOptions } from "../../src/ssh/connection";
 
-export class FakeSshConnection {
+export class MockSshConnection implements ISshConnection {
   connected = false;
   calls: string[] = [];
   stdinData: Map<string, Buffer> = new Map();
@@ -141,7 +141,7 @@ export class FakeSshConnection {
     ee.pid = 12345;
     ee.kill = () => {};
     // Emit configured stdout data for server start commands (spawnProcess
-    // called with a command string, not just -D args).
+    // called with a command string, not only -D args).
     if (_command && this.spawnStdout) {
       const data = this.spawnStdout;
       setImmediate(() => ee.stdout.emit("data", Buffer.from(data, "utf-8")));

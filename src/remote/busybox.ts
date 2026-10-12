@@ -23,7 +23,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import type { SshConnection, ExecResult } from "../ssh/connection";
+import type { ISshConnection, ExecResult } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 
 /** Subdirectory under $HOME for the vendored toolset. */
@@ -90,6 +90,29 @@ export function agentForwardCommand(
 }
 
 /**
+ * One-shot agent forward for the ssh session path. Same repoint +
+ * marker as agentForwardCommand, minus the keep-alive loop: the
+ * session's control shell already keeps the ssh session (and the
+ * forwarded agent socket) alive. Runs as a foreground exec; stdout is
+ * the marker line + yes/empty line, parseable with
+ * parseAgentForwardReady.
+ */
+export function agentForwardCommandOneshot(
+  home: string,
+  link: string,
+): { command: string; marker: string } {
+  const marker = `ZYAGENT-${crypto.randomBytes(8).toString("hex")}`;
+  const script =
+    `PATH="$2:$PATH"; export PATH; ` +
+    `s=; if [ -n "$SSH_AUTH_SOCK" ] && ln -f -s "$SSH_AUTH_SOCK" "$1"; then s=yes; fi; ` +
+    `printf "%s\n" "$3" "$s"`;
+  return {
+    command: `${remoteShPath(home)} -c ${shellQuote(script)} sh ${shellQuote(link)} ${shellQuote(remoteToolsDir(home))} ${shellQuote(marker)}`,
+    marker,
+  };
+}
+
+/**
  * Parse agentForwardCommand output accumulated so far. Returns undefined
  * until the marker line and the line after it are complete, then whether
  * the symlink now points at a live forwarded agent. Anything before the
@@ -114,21 +137,18 @@ export function localBusyboxPath(extensionPath: string, arch: string): string {
   return path.join(extensionPath, "tools", "busybox", `bb-${arch}`);
 }
 
-/**
- * Shell-quote a string for safe embedding inside single quotes.
- * Produces 'foo'\''bar' for a string containing foo'bar.
- */
-export function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+// shellQuote lives in ./shellQuote (shared with the standalone bundles).
+// Imported for local use and re-exported so existing importers don't change.
+import { shellQuote } from "./shellQuote";
+export { shellQuote };
 
 /**
  * Run a command via the vendored busybox sh, with busybox tools at the
- * front of PATH. Use this for anything after bootstrap - gives a known
+ * front of PATH. Use this for anything after bootstrap: gives a known
  * POSIX environment regardless of the remote's login shell or utilities.
  */
 export async function bbExec(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   command: string,
 ): Promise<ExecResult> {
@@ -140,7 +160,7 @@ export async function bbExec(
 
 /** Same as bbExec but streams stdin data into the command. */
 export async function bbExecWithStdin(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   command: string,
   stdin: Buffer,
@@ -172,14 +192,14 @@ export interface RemoteProbe {
  * generated milliseconds ago on the client can't appear in rc noise.
  */
 export async function probeRemote(
-  conn: SshConnection,
+  conn: ISshConnection,
   serverDataFolderName: string,
   commit: string,
 ): Promise<RemoteProbe> {
   const marker = `ZYPROBE-${crypto.randomBytes(8).toString("hex")}`;
 
   // Probe script: detect HOME, arch, busybox, and existing install in one
-  // call. Values are embedded directly (they're constants/hex — no user
+  // call. Values are embedded directly (they're constants/hex, no user
   // input). The marker is passed as $1 so the script stays single-quote-free,
   // keeping the outer shellQuote clean (no nested quoting).
   //
@@ -228,7 +248,7 @@ export async function probeRemote(
 }
 
 /** Detect $HOME on the remote. Throws if unset (security: /tmp is shared). */
-export async function probeHome(conn: SshConnection): Promise<string> {
+export async function probeHome(conn: ISshConnection): Promise<string> {
   const result = await conn.exec("printenv HOME");
   const home = result.stdout.trim();
   if (!home) {
@@ -238,7 +258,7 @@ export async function probeHome(conn: SshConnection): Promise<string> {
 }
 
 /** Detect architecture via uname -m. Maps to x64/arm64. */
-export async function probeArch(conn: SshConnection): Promise<string> {
+export async function probeArch(conn: ISshConnection): Promise<string> {
   const result = await conn.exec("uname -m");
   if (result.exitCode !== 0) {
     throw new Error(`Failed to detect architecture: ${result.stderr}`);
@@ -262,7 +282,7 @@ export function normalizeArch(unameArch: string): string {
 
 /** Check whether busybox is already bootstrapped on the remote. */
 export async function isBootstrapped(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
 ): Promise<boolean> {
   const sh = remoteShPath(home);
@@ -283,7 +303,7 @@ export async function isBootstrapped(
  * install). Collapsing to 1 saves 4 SSH handshakes per first-connect.
  */
 export async function bootstrapBusybox(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   arch: string,
   extensionPath: string,

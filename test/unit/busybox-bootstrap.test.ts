@@ -14,7 +14,7 @@ import {
   isBootstrapped,
   probeRemote,
 } from "../../src/remote/busybox";
-import { FakeSshConnection, ok, fail, noopLogger } from "../__mocks__/fakeSshConnection";
+import { MockSshConnection, ok, fail, noopLogger } from "../__mocks__/mockSshConnection";
 
 let tmpDir: string;
 
@@ -28,7 +28,7 @@ afterEach(() => {
 
 describe("probeRemote", () => {
   it("returns home, arch, busybox, and install status in one call", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setProbeResponse("/home/user", "x86_64", "yes", "no");
     conn.setDefault(ok());
 
@@ -41,7 +41,7 @@ describe("probeRemote", () => {
   });
 
   it("ignores shell-init noise before the marker", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     // Simulate the bug-report scenario: rc file emits a terminal-title
     // echo before the probe output (issue #6).
     conn.setProbeResponse("/home/user", "x86_64", "yes", "no", '-ne "\\033]0;$(hostname)\\007"\n');
@@ -56,7 +56,7 @@ describe("probeRemote", () => {
   });
 
   it("throws when HOME is empty", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setProbeResponse("", "x86_64", "no", "no");
     conn.setDefault(ok());
 
@@ -66,7 +66,7 @@ describe("probeRemote", () => {
   });
 
   it("throws on unsupported arch", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setProbeResponse("/home/user", "mips", "no", "no");
     conn.setDefault(ok());
 
@@ -76,7 +76,7 @@ describe("probeRemote", () => {
   });
 
   it("throws when the marker is missing from output", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("printenv", ok("garbage"));
     conn.setDefault(ok());
 
@@ -86,7 +86,7 @@ describe("probeRemote", () => {
   });
 
   it("reports installPresent=true when node exists", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setProbeResponse("/home/user", "aarch64", "yes", "yes");
     conn.setDefault(ok());
 
@@ -96,7 +96,7 @@ describe("probeRemote", () => {
   });
 
   it("runs the probe under sh -c (works with non-POSIX login shells like fish)", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setProbeResponse("/home/fisher", "x86_64", "no", "no");
     conn.setDefault(ok());
 
@@ -110,14 +110,14 @@ describe("probeRemote", () => {
 
 describe("probeHome", () => {
   it("returns HOME from printenv", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("printenv", ok("/home/user"));
     const home = await probeHome(conn as any);
     expect(home).toBe("/home/user");
   });
 
   it("throws when HOME is empty", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("printenv", ok(""));
     await expect(probeHome(conn as any)).rejects.toThrow(/HOME is empty/);
   });
@@ -125,27 +125,27 @@ describe("probeHome", () => {
 
 describe("probeArch", () => {
   it("detects x86_64", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname", ok("x86_64"));
     const arch = await probeArch(conn as any);
     expect(arch).toBe("x64");
   });
 
   it("detects aarch64", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname", ok("aarch64"));
     const arch = await probeArch(conn as any);
     expect(arch).toBe("arm64");
   });
 
   it("throws on unsupported arch", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname", ok("mips"));
     await expect(probeArch(conn as any)).rejects.toThrow("Unsupported");
   });
 
   it("throws when uname fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname", fail("command not found"));
     await expect(probeArch(conn as any)).rejects.toThrow("detect architecture");
   });
@@ -153,14 +153,14 @@ describe("probeArch", () => {
 
 describe("isBootstrapped", () => {
   it("returns true when sh is executable", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("test -x", ok());
     const result = await isBootstrapped(conn as any, "/home/user");
     expect(result).toBe(true);
   });
 
   it("returns false when sh is not executable", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("test -x", fail());
     const result = await isBootstrapped(conn as any, "/home/user");
     expect(result).toBe(false);
@@ -175,7 +175,7 @@ describe("bootstrapBusybox", () => {
     const bbPath = path.join(busyboxDir, "bb-x64");
     fs.writeFileSync(bbPath, Buffer.from("fake-busybox-content"));
 
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     // Single call: mkdir && cat && chmod && verify && --install
     conn.setDefault(ok());
@@ -209,7 +209,7 @@ describe("bootstrapBusybox", () => {
     fs.mkdirSync(busyboxDir, { recursive: true });
     fs.writeFileSync(path.join(busyboxDir, "bb-x64"), Buffer.from("x"));
 
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setDefault(fail("permission denied"));
 
     await expect(

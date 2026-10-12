@@ -2,6 +2,10 @@
 dist/**
 !dist/extension.js
 !dist/extension.js.map
+!dist/localServer.js
+!dist/localServer.js.map
+!dist/sshTunnel.js
+!dist/sshTunnel.js.map
 
 # Source / dev - not needed at runtime in the VSIX
 src/**
@@ -15,6 +19,7 @@ vendor/**
 resources/.gitkeep
 scripts/**
 !scripts/askpass/**
+!scripts/sshSession/**
 .open-vscode/**
 .vscode/**
 .github/**

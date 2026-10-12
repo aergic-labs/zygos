@@ -6,7 +6,7 @@
 /**
  * ~/.ssh/config reader.
  *
- * Uses the `ssh-config` package (MIT) for correct parsing - it handles
+ * Uses the `ssh-config` package (MIT) for correct parsing; it handles
  * Include directives (glob-expanded), Match blocks, and host patterns,
  * all of which are painful to reimplement and a common open-remote-ssh
  * bug source.
@@ -57,6 +57,7 @@ export function sshSettings(): {
   configFile?: string;
   handshakeTimeoutMs?: number;
   tcpTimeoutSeconds?: number;
+  usePersistentConnection?: boolean;
 } {
   const cfg = vscode.workspace.getConfiguration("zygos");
   const expand = (v: string): string =>
@@ -69,11 +70,13 @@ export function sshSettings(): {
   const tcpTimeoutSeconds = resolveTcpSeconds(
     cfg.get<number>("tcpTimeout", 15),
   );
+  const usePersistentConnection = cfg.get<boolean>("usePersistentConnection", false);
   return {
     sshPath: sshPath ? expand(sshPath) : undefined,
     configFile: configFile ? expand(configFile) : undefined,
     handshakeTimeoutMs,
     tcpTimeoutSeconds,
+    usePersistentConnection,
   };
 }
 
@@ -130,7 +133,7 @@ export async function loadSshConfig(): Promise<{
 }> {
   const userConfig = await readConfigFile(getConfigPath());
 
-  // System config (best-effort - may not exist / may be elsewhere on Windows).
+  // System config (best-effort: may not exist / may be elsewhere on Windows).
   const systemPath =
     process.platform === "win32"
       ? path.resolve(

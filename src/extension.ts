@@ -20,6 +20,8 @@ import {
 import { registerServerDownloadPanel } from "./webviews/serverDownloadPanel";
 import { FORK_TEMPLATES } from "./platform/forkTemplates";
 import { initCache, disposeCache } from "./ssh/askpassCache";
+import { initSshSessionSecret, disposeSshSessionSecret, sshSessionSecretReady } from "./ssh/sshSessionSecret";
+import { sshSettings } from "./ssh/sshConfig";
 import { initVscodiumFeed } from "./remote/vscodiumFeed";
 import { configureDownloadCache, maybePruneCache } from "./remote/download";
 
@@ -46,8 +48,6 @@ export async function activate(
     return;
   }
 
-  logger.info(`Activating on ${platform.name} (build ${__BUILD_ID__})`);
-
   // Register the host tree view synchronously before any async work.
   // VS Code restores view state early in window init; if createTreeView
   // hasn't run yet when it tries, it shows "No view is registered with
@@ -55,20 +55,27 @@ export async function activate(
   // (no remote) or when connected via ssh-remote. The view is declared
   // with remoteName: "ssh-remote" so VS Code won't try to show it inside
   // a devcontainer.
-
+  //
   // Recent-folder history for the SSH Targets tree. Namespaced per
   // extension so it never collides with artizo's container history when
   // both are installed in the same IDE. zygos is extensionKind ["ui"], so
-  // it only ever runs on the apex - even inside an SSH remote window. In
-  // that window, workspaceFolders are `vscode-remote://ssh-remote+<hex>/path`
-  // URIs, which is exactly what the shared `captureCurrentWorkspace` helper
-  // filters for. It writes to the APEX globalState - the same store the
-  // tree reads - so recent folders appear on the client where the SSH
-  // Targets tree lives, not stranded on the remote host.
+  // it only runs on the apex, even inside an SSH remote window. There,
+  // workspaceFolders are `vscode-remote://ssh-remote+<hex>/path` URIs,
+  // exactly what the shared `captureCurrentWorkspace` helper filters for.
+  // It writes to the APEX globalState, the same store the tree reads, so
+  // recent folders appear on the client where the SSH Targets tree lives,
+  // not stranded on the remote host.
   const folderHistory = new FolderHistoryManager({
     state: context.globalState,
     keyPrefix: "zygos",
   });
+  const isHostContext =
+    !vscode.env.remoteName || vscode.env.remoteName === "ssh-remote";
+  if (isHostContext) {
+    registerHostCommands(context, logger, folderHistory);
+  }
+
+  logger.info(`Activating on ${platform.name} (build ${__BUILD_ID__})`);
 
   // Capture on activation when connected to an SSH remote (a folder is
   // already open), and whenever the workspace folders change. Fire-and-
@@ -84,12 +91,6 @@ export async function activate(
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(capture),
   );
-
-  const isHostContext =
-    !vscode.env.remoteName || vscode.env.remoteName === "ssh-remote";
-  if (isHostContext) {
-    registerHostCommands(context, logger, folderHistory);
-  }
 
   // On activation inside an SSH remote window, capture the open folder(s).
   capture();
@@ -111,8 +112,8 @@ export async function activate(
   });
 
   // Check for conflicting SSH-remote extensions before anything else.
-  // Only on apex - in remote/ssh/devcontainer contexts there is no
-  // resolver conflict. Kiro does not have conflicting extensions.
+  // Only on apex; remote/ssh/devcontainer contexts have no resolver
+  // conflict. Kiro does not have conflicting extensions.
   let conflictIds: string[] = [];
   if (HAS_VSCODIUM_ADAPTER && !vscode.env.remoteName) {
     conflictIds = await checkForConflicts(platform, logger);
@@ -180,6 +181,21 @@ export async function activate(
     rotationDays,
   );
 
+  // Initialize the ssh session secret when persistent connection is enabled.
+  const { usePersistentConnection } = sshSettings();
+  if (usePersistentConnection) {
+    const sessionKeyRotationDays = vscode.workspace
+      .getConfiguration("zygos")
+      .get<number>("sessionKeyRotationDays", 7);
+    await initSshSessionSecret(
+      context.secrets,
+      logger,
+      "zygos.sshSession.masterkey",
+      sessionKeyRotationDays,
+    );
+    logger.info("[activate] persistent connection enabled");
+  }
+
   // Initialize the VSCodium release feed used by the vscode-oss fork.
   // Bundled list ships in the VSIX; per-user cache is append-only.
   initVscodiumFeed({
@@ -215,4 +231,5 @@ export async function activate(
 
 export async function deactivate(): Promise<void> {
   await disposeCache();
+  if (sshSessionSecretReady()) disposeSshSessionSecret();
 }

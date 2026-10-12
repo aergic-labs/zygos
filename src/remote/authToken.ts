@@ -14,7 +14,7 @@
  * writes each with an atomic temp+mv, non-fatal on read-only mounts.
  */
 
-import type { SshConnection } from "../ssh/connection";
+import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import type { PlatformAdapter } from "../platform/types";
 import { bbExecWithStdin } from "./busybox";
@@ -30,7 +30,7 @@ import { bbExecWithStdin } from "./busybox";
  * the call; the temp write fails silently and the mounted file stays.
  */
 export async function copyAuthFiles(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   adapter: PlatformAdapter,
   logger: Logger,

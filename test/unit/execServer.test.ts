@@ -6,15 +6,15 @@
 import { describe, it, expect } from "vitest";
 import { SshExecServer } from "../../src/remote/execServer";
 import {
-  FakeSshConnection,
+  MockSshConnection,
   ok,
   fail,
   noopLogger,
-} from "../__mocks__/fakeSshConnection";
+} from "../__mocks__/mockSshConnection";
 
 describe("SshExecServer.env", () => {
   it("returns parsed environment and OS info", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname -s", ok("Linux"));
     conn.setResponse("uname -r", ok("5.15.0-91-generic"));
     conn.setResponse("env", ok("PATH=/usr/bin\nHOME=/root\nFOO=bar=baz\n"));
@@ -30,7 +30,7 @@ describe("SshExecServer.env", () => {
   });
 
   it("maps Darwin to darwin", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname -s", ok("Darwin"));
     conn.setResponse("uname -r", ok("23.1.0"));
     conn.setResponse("env", ok(""));
@@ -43,7 +43,7 @@ describe("SshExecServer.env", () => {
   });
 
   it("lowercases unknown platforms", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname -s", ok("FreeBSD"));
     conn.setResponse("uname -r", ok(""));
     conn.setResponse("env", ok(""));
@@ -56,7 +56,7 @@ describe("SshExecServer.env", () => {
   });
 
   it("skips malformed env lines", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("uname", ok("Linux"));
     conn.setResponse("env", ok("VALID=1\nnoequals\nALSO=2\n"));
 
@@ -71,7 +71,7 @@ describe("SshExecServer.env", () => {
 
 describe("SshExecServer.kill", () => {
   it("sends kill command", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.kill(12345);
     expect(conn.calls.some((c) => c.includes("kill 12345"))).toBe(true);
@@ -80,7 +80,7 @@ describe("SshExecServer.kill", () => {
 
 describe("SshExecServer.tcpConnect", () => {
   it("throws when socksPort is undefined", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await expect(server.tcpConnect("host", 8080)).rejects.toThrow(
       "SOCKS port not available",
@@ -90,7 +90,7 @@ describe("SshExecServer.tcpConnect", () => {
 
 describe("SshExecServer.fs.stat", () => {
   it("parses regular file stat output", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("stat", ok("regular file 1024 1700000000"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -102,7 +102,7 @@ describe("SshExecServer.fs.stat", () => {
   });
 
   it("parses directory stat output", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("stat", ok("directory 4096 1700000000"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -112,7 +112,7 @@ describe("SshExecServer.fs.stat", () => {
   });
 
   it("parses symbolic link stat output", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("stat", ok("symbolic link 8 1700000000"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -122,7 +122,7 @@ describe("SshExecServer.fs.stat", () => {
   });
 
   it("throws when stat fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("stat", fail("no such file"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -132,14 +132,14 @@ describe("SshExecServer.fs.stat", () => {
 
 describe("SshExecServer.fs.mkdirp", () => {
   it("calls mkdir -p", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.fs.mkdirp("/new/dir");
     expect(conn.calls.some((c) => c.includes("mkdir -p"))).toBe(true);
   });
 
   it("throws when mkdir fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("mkdir", fail("denied"));
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await expect(server.fs.mkdirp("/new/dir")).rejects.toThrow("mkdirp failed");
@@ -148,7 +148,7 @@ describe("SshExecServer.fs.mkdirp", () => {
 
 describe("SshExecServer.fs.rm", () => {
   it("calls rm -rf", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.fs.rm("/old/dir");
     expect(conn.calls.some((c) => c.includes("rm -rf"))).toBe(true);
@@ -157,14 +157,14 @@ describe("SshExecServer.fs.rm", () => {
 
 describe("SshExecServer.fs.rename", () => {
   it("calls mv", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.fs.rename("/from", "/to");
     expect(conn.calls.some((c) => c.includes("mv"))).toBe(true);
   });
 
   it("throws when mv fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("mv", fail("cross-device"));
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await expect(server.fs.rename("/from", "/to")).rejects.toThrow(
@@ -175,7 +175,7 @@ describe("SshExecServer.fs.rename", () => {
 
 describe("SshExecServer.fs.readdir", () => {
   it("parses ls -A -F output", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("ls", ok("file.txt*\ndir/\nlink@"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -188,7 +188,7 @@ describe("SshExecServer.fs.readdir", () => {
   });
 
   it("handles files without suffix", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("ls", ok("plainfile"));
 
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
@@ -199,7 +199,7 @@ describe("SshExecServer.fs.readdir", () => {
   });
 
   it("throws when ls fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     conn.setResponse("ls", fail("denied"));
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await expect(server.fs.readdir("/dir")).rejects.toThrow("readdir failed");
@@ -208,7 +208,7 @@ describe("SshExecServer.fs.readdir", () => {
 
 describe("SshExecServer.spawn", () => {
   it("spawns a command and returns streams", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     const spawned = await server.spawn("docker", ["ps", "-a"]);
     expect(spawned.stdin).toBeDefined();
@@ -218,15 +218,15 @@ describe("SshExecServer.spawn", () => {
   });
 
   it("builds command with env vars", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.spawn("cmd", [], { env: { FOO: "bar" } });
-    // spawnProcess was called - the fake tracks it as a call
-    // (FakeSshConnection.spawnProcess doesn't push to calls, but doesn't throw)
+    // spawnProcess ran; the fake tracks it as a call
+    // (MockSshConnection.spawnProcess doesn't push to calls but doesn't throw)
   });
 
   it("builds command with cwd", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     const server = new SshExecServer(conn as any, undefined, noopLogger as any);
     await server.spawn("cmd", ["arg"], { cwd: "/work" });
     // Should not throw

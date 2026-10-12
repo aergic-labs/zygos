@@ -16,7 +16,7 @@ const flags = {
 };
 
 /** @type {esbuild.BuildOptions} */
-const buildOptions = {
+const extensionOptions = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
   outfile: "dist/extension.js",
@@ -44,13 +44,41 @@ const buildOptions = {
   },
 };
 
+/** @type {esbuild.BuildOptions} */
+const serverOptions = {
+  ...extensionOptions,
+  entryPoints: ["src/ssh/localServer.ts"],
+  outfile: "dist/localServer.js",
+  external: [],
+  define: {
+    __BUILD_ID__: JSON.stringify(new Date().toISOString()),
+  },
+};
+
+/** @type {esbuild.BuildOptions} */
+const tunnelOptions = {
+  ...extensionOptions,
+  entryPoints: ["src/sshTunnel/server.ts"],
+  outfile: "dist/sshTunnel.js",
+  external: [],
+  define: {
+    __BUILD_ID__: JSON.stringify(new Date().toISOString()),
+  },
+};
+
 async function main() {
   if (isWatch) {
-    const ctx = await esbuild.context(buildOptions);
-    await ctx.watch();
-    console.log(`[esbuild] watching (target=${target})...`);
+    const extCtx = await esbuild.context(extensionOptions);
+    const serverCtx = await esbuild.context(serverOptions);
+    const tunnelCtx = await esbuild.context(tunnelOptions);
+    await extCtx.watch();
+    await serverCtx.watch();
+    await tunnelCtx.watch();
+    console.log(`[esbuild] watching extension + localServer + sshTunnel (target=${target})...`);
   } else {
-    await esbuild.build(buildOptions);
+    await esbuild.build(extensionOptions);
+    await esbuild.build(serverOptions);
+    await esbuild.build(tunnelOptions);
     console.log(`[esbuild] build complete (target=${target})`);
   }
 }

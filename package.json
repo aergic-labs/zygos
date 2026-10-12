@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.4.10",
+  "version": "0.5.0",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -317,6 +317,19 @@
           "minimum": 0,
           "description": "Maximum time in seconds to wait for the initial TCP connection to establish. Set to 0 to use the system default.",
           "order": 21
+        },
+        "zygos.usePersistentConnection": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reuse a single ssh process per window for all remote commands instead of one ssh per command. Faster, with fewer repeated auth prompts. Experimental; restart required.",
+          "order": 22
+        },
+        "zygos.sessionKeyRotationDays": {
+          "type": "integer",
+          "default": 7,
+          "minimum": 0,
+          "description": "Days before the persistent connection master key rotates. 0 = never rotate. Default 7.",
+          "order": 23
         }
       }
     }
@@ -336,7 +349,7 @@
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.96.0",
     "@vitest/coverage-v8": "^5.0.1",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.8.0",
     "fast-check": "^3.23.0",
@@ -351,5 +364,8 @@
     "cacache": "^21.0.1",
     "jsonc-parser": "^3.3.1",
     "ssh-config": "^5.1.0"
+  },
+  "overrides": {
+    "@vscode/vsce": "^4.0.0"
   }
 }

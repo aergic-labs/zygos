@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { copyAuthFiles } from "../../src/remote/authToken";
-import { FakeSshConnection, noopLogger } from "../__mocks__/fakeSshConnection";
+import { MockSshConnection, noopLogger } from "../__mocks__/mockSshConnection";
 import type { PlatformAdapter } from "../../src/platform/types";
 
 function makeAdapter(files: { path: string; content: string }[] | undefined): PlatformAdapter {
@@ -23,7 +23,7 @@ function makeAdapter(files: { path: string; content: string }[] | undefined): Pl
 
 describe("copyAuthFiles", () => {
   it("skips when adapter has no readAuthFiles", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     const adapter: PlatformAdapter = {
       name: "Test",
@@ -40,7 +40,7 @@ describe("copyAuthFiles", () => {
   });
 
   it("skips when adapter returns no files", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     const adapter = makeAdapter([]);
     await copyAuthFiles(conn as any, "/home/user", adapter, noopLogger as any);
@@ -48,7 +48,7 @@ describe("copyAuthFiles", () => {
   });
 
   it("streams path/b64 pairs + blank terminator in one call", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     const adapter = makeAdapter([
       { path: ".aws/sso/cache/kiro-auth-token.json", content: '{"token":"a"}' },
@@ -75,7 +75,7 @@ describe("copyAuthFiles", () => {
   });
 
   it("throws when remote command fails", async () => {
-    const conn = new FakeSshConnection();
+    const conn = new MockSshConnection();
     await conn.connect();
     conn.setResponse("sh", {
       stdout: "",

@@ -10,7 +10,7 @@ import * as os from "node:os";
 
 import { ensureArgvProposedApi } from "../../src/platform/argv";
 import type { PlatformAdapter } from "../../src/platform/types";
-import { noopLogger } from "../__mocks__/fakeSshConnection";
+import { noopLogger } from "../__mocks__/mockSshConnection";
 
 // --- Helpers ---
 

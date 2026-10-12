@@ -12,21 +12,21 @@
  * `--connection-token-file <path>`. Same approach as MS Remote-SSH and Trae.
  */
 
-import type { SshConnection } from "../ssh/connection";
+import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import { REMOTE_DIR_NAME, bbExecWithStdin, bbExec, shellQuote } from "./busybox";
 import * as path from "node:path";
 
 /**
  * Write the connection token to a file on the remote with mode 600.
- * The file lives under $HOME/.ssh-remote/ (which is created during busybox
+ * The file lives under $HOME/.ssh-remote/ (created during busybox
  * bootstrap, before this is called).
  *
  * Returns the absolute remote path the caller should pass to
  * `--connection-token-file`.
  */
 export async function writeConnectionTokenFile(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   token: string,
   logger: Logger,
@@ -56,7 +56,7 @@ export async function writeConnectionTokenFile(
  * Used when reusing a server started by another window.
  */
 export async function readConnectionTokenFile(
-  conn: SshConnection,
+  conn: ISshConnection,
   home: string,
   logger: Logger,
   installPath?: string,
@@ -77,12 +77,12 @@ export async function readConnectionTokenFile(
 }
 
 /**
- * Remove the connection token file on the remote. Best-effort - failures are
+ * Remove the connection token file on the remote. Best-effort: failures are
  * logged, not thrown, since this runs during cleanup. `rm` is universal, so
  * no need to route through busybox.
  */
 export async function removeConnectionTokenFile(
-  conn: SshConnection,
+  conn: ISshConnection,
   tokenFile: string,
   logger: Logger,
 ): Promise<void> {

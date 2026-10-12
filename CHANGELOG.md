@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0]
+
+### Added
+
+- Experimental persistent SSH connection (`zygos.usePersistentConnection`): reuse one long-lived ssh process per window instead of spawning one per command. Faster, with fewer repeated auth prompts. Requires a full restart.
+- `zygos.sessionKeyRotationDays` setting for the persistent connection master key.
+
+### Fixed
+
+- Remote server PID discovery now matches `out/server-main.js` instead of the install path, so the recorded PID is the server, not the `sh` wrapper or the ssh tunnel.
+- SOCKS forward exit logs now include the ssh stderr tail, so a forward dying before remote setup shows why instead of just `code=255`. (#11)
+- Dev-dep advisories cleared via a `@vscode/vsce` 4.0.0 override and `npm audit fix`.
+
 ## [0.4.10]
 
 ### Added

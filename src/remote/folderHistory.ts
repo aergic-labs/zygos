@@ -6,40 +6,37 @@
 /**
  * Recent-folder history for the Remote Explorer.
  *
- * Shared between zygos (SSH Targets) and artizo (Dev Containers). Stores
+ * Shared by zygos (SSH Targets) and artizo (Dev Containers). Stores
  * `(remote, folder)` pairs in `globalState`, namespaced per extension so the
- * two histories don't cross-pollute when both extensions are installed in the
- * same IDE. Pure storage + capture logic — no `TreeItem`, no command
- * registration, no `ExecutionTier` knowledge. The tier check (which tier am
- * I at, should I capture here) is the caller's responsibility.
+ * two don't cross-pollute when both are installed. Storage + capture only:
+ * no `TreeItem`, no commands, no `ExecutionTier`. The tier check is the
+ * caller's job.
  *
- * Pattern follows MS Remote-SSH's `FolderHistoryManager`
- * (`extension-beautified.js` L21843-21934): `{ [remote]: string[] (folders) }`
- * in a single globalState key, most-recent-first, dedup on add.
+ * Layout follows MS Remote-SSH's `FolderHistoryManager`
+ * (`extension-beautified.js` L21843-21934): `{ [remote]: string[] }` in one
+ * globalState key, most-recent-first, dedup on add.
  */
 
 import * as vscode from "vscode";
 
 /**
- * A (remote authority, folder path) pair — one entry in the history.
+ * One history entry: a (remote authority, folder path) pair.
  *
- * `remote` is the FULL `vscode-remote://` authority string
- * (e.g. `ssh-remote+7b22...`, `artizo-container+6f72...`). Storing the
- * full authority (not just the post-`+` payload) keeps `toUri()` lossless:
- * the payload half can itself contain `+` (a container authority whose hex
- * decodes to a path with `+`), so splitting would lose the scheme and make
- * the URI unreopenable. Grouping by the full authority also keeps distinct
- * resolver types (`ssh-remote` vs `artizo-container`) in separate groups
- * even before the per-extension `keyPrefix` namespace is applied.
+ * `remote` is the full `vscode-remote://` authority (e.g.
+ * `ssh-remote+7b22...`, `artizo-container+6f72...`). Keep the full
+ * authority, not just the post-`+` payload: the payload can itself contain
+ * `+` (a container authority whose hex decodes to a path with `+`), so
+ * splitting loses the scheme and the URI won't reopen. Grouping by full
+ * authority also separates resolver types (`ssh-remote` vs
+ * `artizo-container`) before the `keyPrefix` namespace applies.
  */
 export class FolderDescriptor {
   constructor(readonly remote: string, readonly folder: string) {}
 
   /**
-   * Build a descriptor from a workspace URI. Returns null for URIs that
-   * aren't `vscode-remote://` (local folders, untitled, etc.) or that
-   * have no authority, or whose authority has no `scheme+` separator
-   * (a bare authority can't be reopened, so don't history it).
+   * Build a descriptor from a workspace URI. Null for non-`vscode-remote`
+   * URIs, missing authority, or an authority with no `scheme+` separator
+   * (a bare authority can't be reopened).
    */
   static fromUri(uri: vscode.Uri): FolderDescriptor | null {
     if (uri.scheme !== "vscode-remote") return null;
@@ -67,9 +64,9 @@ export interface FolderHistoryOptions {
 }
 
 /**
- * Persists recent-folder history in `globalState`. Read/add/remove/list —
- * no tree, no commands. The caller wires this into its own tree view and
- * command registrations.
+ * Persists recent-folder history in `globalState`. Read/add/remove/list only;
+ * no tree, no commands. The caller wires it into its own tree view and
+ * commands.
  */
 export class FolderHistoryManager {
   private readonly state: vscode.Memento;
@@ -128,7 +125,7 @@ export class FolderHistoryManager {
     return (data[remote] ?? []).map((folder) => new FolderDescriptor(remote, folder));
   }
 
-  /** All remote authorities that have at least one folder — for tree grouping. */
+  /** All remote authorities with at least one folder, for tree grouping. */
   getRemotes(): string[] {
     return Object.keys(this.read());
   }
@@ -140,16 +137,14 @@ export class FolderHistoryManager {
 }
 
 /**
- * Capture the current workspace folders into history. Walks
- * `vscode.workspace.workspaceFolders`, filters to `vscode-remote` URIs
- * whose authority starts with `remoteNamePrefix` (e.g. `"ssh-remote"`,
- * `"artizo-container"`), and adds them. Idempotent and fire-and-forget:
- * errors are swallowed so a failed capture never fails activation or
- * the open path.
+ * Capture the current workspace folders into history. Filters
+ * `vscode.workspace.workspaceFolders` to `vscode-remote` URIs whose
+ * authority starts with `remoteNamePrefix` (e.g. `"ssh-remote"`,
+ * `"artizo-container"`) and adds them. Idempotent, fire-and-forget: errors
+ * are swallowed so a failed capture never fails activation or the open path.
  *
- * The tier check (which tier am I at, should I capture here) is the
- * caller's responsibility — this helper doesn't look at `vscode.env.remoteName`
- * or `ExecutionTier`. It just filters by URI authority prefix.
+ * The tier check is the caller's job; this helper only filters by URI
+ * authority prefix.
  */
 export async function captureCurrentWorkspace(
   history: FolderHistoryManager,
@@ -168,6 +163,6 @@ export async function captureCurrentWorkspace(
   try {
     await history.addFolders(descriptors);
   } catch {
-    // best effort — never fail the caller
+    // best effort; never fail the caller
   }
 }
