@@ -51,10 +51,9 @@ export async function activate(
   // Register the host tree view synchronously before any async work.
   // VS Code restores view state early in window init; if createTreeView
   // hasn't run yet when it tries, it shows "No view is registered with
-  // id: zygos.hosts". The host commands only make sense on the apex host
-  // (no remote) or when connected via ssh-remote. The view is declared
-  // with remoteName: "ssh-remote" so VS Code won't try to show it inside
-  // a devcontainer.
+  // id: zygos.hosts". The view is declared with remoteName: "ssh-remote"
+  // so VS Code only shows it on the apex or in an ssh-remote window; we
+  // register unconditionally so the early probe always finds the provider.
   //
   // Recent-folder history for the SSH Targets tree. Namespaced per
   // extension so it never collides with artizo's container history when
@@ -69,11 +68,7 @@ export async function activate(
     state: context.globalState,
     keyPrefix: "zygos",
   });
-  const isHostContext =
-    !vscode.env.remoteName || vscode.env.remoteName === "ssh-remote";
-  if (isHostContext) {
-    registerHostCommands(context, logger, folderHistory);
-  }
+  registerHostCommands(context, logger, folderHistory);
 
   logger.info(`Activating on ${platform.name} (build ${__BUILD_ID__})`);
 

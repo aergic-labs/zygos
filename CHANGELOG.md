@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1]
+
+### Fixed
+
+- SSH Targets tree view registered unconditionally on activation, fixing "No view is registered with id: zygos.hosts" on reload in an ssh-remote window. The view's `remoteName` already gates visibility; the provider registration is always safe.
+
 ## [0.5.0]
 
 ### Added
