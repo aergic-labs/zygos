@@ -38,9 +38,19 @@ export function socks5Connect(
   return new Promise<net.Socket>((resolve, reject) => {
     const socket = net.connect(socksPort, socksHost);
 
+    // Shape SOCKS5 failures as ECONNREFUSED+connect so vscode's reconnect
+    // loop classifies them as retryable and re-resolves. A plain Error hits
+    // the catch-all and surfaces a permanent-error dialog.
+    const rejectRefused = (msg: string): void => {
+      const err = new Error(msg);
+      (err as any).code = "ECONNREFUSED";
+      (err as any).syscall = "connect";
+      reject(err);
+    };
+
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`SOCKS5 connect timed out after ${timeoutMs}ms`));
+      rejectRefused(`SOCKS5 connect timed out after ${timeoutMs}ms`);
     }, timeoutMs);
 
     let phase: "greeting" | "connect" | "done" = "greeting";
@@ -54,12 +64,15 @@ export function socks5Connect(
       clearTimeout(timer);
       socket.removeListener("data", onData);
       socket.destroy();
-      reject(new Error(msg));
+      rejectRefused(msg);
     };
 
     socket.once("error", (err) => {
       clearTimeout(timer);
-      reject(new Error(`SOCKS5 socket error: ${err.message}`));
+      // Re-throw verbatim so `code`/`syscall` reach vscode's reconnect
+      // loop (ECONNREFUSED+connect is retryable). Wrapping loses the shape
+      // and vscode surfaces a permanent-error dialog.
+      reject(err);
     });
 
     // Each handler returns true when it consumed a complete message and

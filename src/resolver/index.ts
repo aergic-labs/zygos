@@ -20,6 +20,12 @@
  *
  * managed-resolver path, required for `resolveExecServer`
  * chaining (devcontainer-over-SSH).
+ *
+ * Shared transport: the ssh connection, SOCKS forward, and Go transport
+ * server are refcounted by authority and shared between `resolve()` and
+ * `resolveExecServer()`. One ssh session, one -D, one Go server per
+ * authority, regardless of how many flows (windows / chained resolves)
+ * are active. See `acquireTransport` / `releaseTransport`.
  */
 
 import * as vscode from "vscode";
@@ -55,7 +61,8 @@ import {
 import { socks5Connect } from "../net/socks5";
 import { wrapSocket } from "../net/managedConnection";
 import { SshExecServer } from "../remote/execServer";
-import { SshTunnelClient } from "../sshTunnel/client";
+import { TransportClient, probeTransportAlive } from "../transport/client";
+import { ZygosTransport } from "../transport/zygos";
 import { AskpassServer } from "../ssh/askpassServer";
 import {
   acquireLockAndProbeZombie,
@@ -69,38 +76,90 @@ import {
   type SocksForward,
 } from "../health/connectionMonitor";
 
-/** Idle timeout for the remote SshTunnel service, in ms. The resolver
- *  kills the tunnel on teardown, but a hard extension-host death (crash,
- *  power loss) sends no kill. This bounds the zombie: no authenticated
- *  requests for this long and the tunnel self-exits. 120s = 4x the 30s
- *  client heartbeat, so a live tunnel never ages out; an orphan dies in
+/** Idle timeout for the Go transport server (ms). 4x the 30s client
+ *  heartbeat, so a live transport never ages out; an orphan dies in
  *  ~2min. */
-const SSH_TUNNEL_IDLE_TIMEOUT_MS = 120_000;
+const TRANSPORT_IDLE_TIMEOUT_MS = 120_000;
 
-/** A SOCKS forward + server process pair. The monitor updates
- * socksPort/forwardProcess/dead in place; makeConnection() reads them per
- * call, repairing without a full re-resolve. */
-interface RemoteConnection extends MonitoredConnection {
-  /** Path on the remote where the connection token was written. */
-  tokenFile: string;
-  /** Monitor for this connection, stopped on cleanup. */
-  monitor: ConnectionMonitor;
-  /** Askpass server (if enabled), stopped on cleanup. */
-  askpass?: AskpassServer;
-  /** Remote HOME dir, for cleanup commands. */
+/** Shared transport: the ssh connection + SOCKS forward + Go transport
+ *  server, refcounted by authority. Both `resolve()` and
+ *  `resolveExecServer()` acquire it. The monitor reads/writes the
+ *  `MonitoredConnection` fields in place; `makeConnection()` reads
+ *  `socksPort` per call. */
+interface SharedTransport extends MonitoredConnection {
+  /** Authority key (e.g. `ssh-remote+<hex>`). */
+  authority: string;
+  /** Remote HOME (probed). */
   home: string;
-  /** Server install path on the remote, for PID/port file cleanup. */
+  /** Remote arch (probed). */
+  arch: string;
+  /** Server install path on the remote (for REH server cleanup). */
   installPath: string;
-  /** Stored makeConnection closure for reuse on re-resolve. */
-  makeConnection: () => Thenable<any>;
-  /** Connection token for reuse on re-resolve. */
+  /** Go transport port (0 = not started). */
+  transportPort: number;
+  /** Go transport token. */
+  transportToken: string;
+  /** Shared transport client. Replaced on restart. */
+  transportClient: ZygosTransport | undefined;
+  /** Askpass server (shared). */
+  askpass: AskpassServer | undefined;
+  /** Monitor for the shared conn + forward. */
+  monitor: ConnectionMonitor;
+  /** Refcount: number of flows holding this. */
+  refs: number;
+  /** Per-flow states attached to this transport. */
+  flows: Set<RemoteConnection>;
+  /** Restart in-progress flag. */
+  restartingTransport: boolean;
+  /** True if the agent forward linked a forwarded agent socket. */
+  agentForwarded: boolean;
+}
+
+/** Per-flow state. Each flow (`resolve()` or `resolveExecServer()`) has
+ *  its own. Holds the per-flow REH server state (`resolve()` only) and a
+ *  back-reference to the shared transport. */
+interface RemoteConnection {
+  /** Back-reference to the shared transport. */
+  shared: SharedTransport;
+  /** Authority key this flow is stored under (`authority` or
+   *  `${authority}:execServer`). */
+  key: string;
+  /** Flow kind. */
+  kind: "resolve" | "execServer";
+  /** REH server process (`resolve` only). */
+  serverProcess: ChildProcess | undefined;
+  /** REH server port (`resolve` only). */
+  remotePort: number;
+  /** Token file path (`resolve` only). */
+  tokenFile: string;
+  /** Connection token (`resolve` only). */
   connectionToken: string;
+  /** Whether we own the REH server (`resolve` only). */
+  ownsServer: boolean;
   /** extensionHostEnv returned by resolve(), for reuse on re-resolve. */
   extensionHostEnv?: Record<string, string | null>;
-  /** SshTunnel port on the remote (session path only). 0 = not started. */
-  tunnelPort: number;
-  /** SshTunnel bearer token (hex) for the remote service. */
-  tunnelToken: string;
+  /** makeConnection closure (`resolve` only). */
+  makeConnection: () => Thenable<any>;
+  /** Per-flow dead flag. Set when the flow's REH server dies, or when the
+   *  shared transport dies (caller checks `flow.dead || flow.shared.dead`). */
+  dead: boolean;
+}
+
+/** Options governing transport acquisition. The shared-transport
+ *  refactor only applies when `share` is set (the experimental
+ *  `usePersistentConnection` path); the default non-session path keeps
+ *  the legacy standalone behavior (own ssh connection per flow, no
+ *  refcounting). */
+interface TransportAcquireOptions {
+  /** Register in `this.transports` and refcount across flows. */
+  share: boolean;
+  /** Call `ensureServerInstalled` (probe + bootstrap). `resolve()` always
+   *  installs; `resolveExecServer()` only installs on the session path. */
+  install: boolean;
+  /** Run the agent forward on the SOCKS channel. `resolve()` always
+   *  forwards the agent; `resolveExecServer()` only does on the session
+   *  path (legacy non-session execServer had no agent role). */
+  agent: boolean;
 }
 
 /** workspaceState key prefix for the per-window agent link id. */
@@ -139,14 +198,19 @@ export type ConnectionFactory = (
 export interface SshSessionDeps {
   serverScriptPath: string;
   wrapperScriptPath: string;
-  tunnelScriptPath: string;
   nodePath: string;
   dataDir: string;
 }
 
 export class SshRemoteResolver {
-  /** Active connections keyed by authority (for reconnect cleanup). */
+  /** Per-flow connection states keyed by authority (`resolve`) or
+   *  `${authority}:execServer` (`resolveExecServer`). */
   private connections = new Map<string, RemoteConnection>();
+  /** Shared transports keyed by authority. Refcounted. */
+  private transports = new Map<string, SharedTransport>();
+  /** In-flight shared transport creation promises, to dedup concurrent
+   *  acquires for the same authority. */
+  private transportPromises = new Map<string, Promise<SharedTransport>>();
   /** Label formatters keyed by authority (disposed on reconnect/deactivate). */
   private labelFormatters = new Map<string, vscode.Disposable>();
   /** Per-window agent link ids keyed by authority (backed by workspaceState). */
@@ -238,11 +302,58 @@ export class SshRemoteResolver {
       status.text = `$(sync~spin) SSH: ${msg}`;
     };
 
-    // Start askpass before resolveFlow so it's available in the catch block
-    // for host password eviction on failure.
-    const askpass = await this.maybeStartAskpass();
-
+    let shared: SharedTransport | undefined;
     try {
+      // Share the transport across flows only on the experimental session
+      // path. The default non-session path keeps the legacy behavior: each
+      // resolve() opens its own ssh connection (no sharing with
+      // resolveExecServer()).
+      const isSession =
+        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+
+      // Session path only: reuse an existing healthy per-flow connection
+      // BEFORE acquiring a transport, so we don't bump the shared refcount
+      // for a flow we won't create. The non-session path keeps its existing
+      // reuse check inside resolveFlow (after acquireTransport), preserving
+      // the legacy behavior.
+      if (isSession) {
+        const existing = this.connections.get(authority);
+        if (existing && !existing.dead && !existing.shared.dead) {
+          // Probe before reuse: the ssh child's TCP can be dead (after apex
+          // sleep) while `dead` is still false (monitor probe didn't fire,
+          // shutdown timer didn't fire). On failure mark dead and fall
+          // through to acquireTransport. Same probe as acquireTransport below.
+          let alive = true;
+          try {
+            const r = await existing.shared.conn.exec("true", 5_000, true);
+            if (r.exitCode !== 0 && r.exitCode !== null) alive = false;
+          } catch {
+            alive = false;
+          }
+          if (alive) {
+            this.logger.info(
+              `[resolve] reusing existing connection for ${authority}`,
+            );
+            return {
+              makeConnection: existing.makeConnection,
+              connectionToken: existing.connectionToken,
+              ...(existing.extensionHostEnv
+                ? { extensionHostEnv: existing.extensionHostEnv }
+                : {}),
+            };
+          }
+          this.logger.info(
+            `[resolve] existing connection for ${authority} probe failed, marking dead`,
+          );
+          existing.dead = true;
+        }
+      }
+
+      shared = await this.acquireTransport(authority, dest, report, {
+        share: isSession,
+        install: true,
+        agent: true,
+      });
       return await this.resolveFlow(
         authority,
         dest,
@@ -250,7 +361,7 @@ export class SshRemoteResolver {
         productInfo,
         isReconnect,
         report,
-        askpass,
+        shared,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -259,9 +370,11 @@ export class SshRemoteResolver {
       // Evict any host passwords cached during this attempt so a retry
       // re-prompts instead of reusing a bad password. Key passphrases are
       // validated before caching, so only host passwords need eviction.
-      if (askpass?.usedHostPassword) {
+      // If `acquireTransport` failed, `createTransport` already evicted; if
+      // `resolveFlow` failed post-acquire, evict via the shared askpass.
+      if (shared?.askpass?.usedHostPassword) {
         this.logger.info("[resolve] evicting host password cache entries");
-        await askpass.evictHostPasswords();
+        await shared.askpass.evictHostPasswords();
       }
 
       // Show a retry notification. The user clicks Retry to reload the
@@ -287,7 +400,7 @@ export class SshRemoteResolver {
     productInfo: ReturnType<typeof getProductInfo>,
     isReconnect: boolean,
     report: (msg: string) => void,
-    askpass: AskpassServer | undefined,
+    shared: SharedTransport,
   ): Promise<{
     makeConnection: () => Thenable<any>;
     connectionToken: string | undefined;
@@ -299,170 +412,67 @@ export class SshRemoteResolver {
     // authority hex.
     const hostLabel = dest.user ? `${dest.user}@${dest.host}` : dest.host;
 
-    // Reuse an existing healthy connection for this authority. VS Code
-    // calls resolve() again when opening a new folder on the same remote;
-    // reconnecting from scratch would kill the server and re-prompt.
+    // Non-session path: reuse an existing healthy per-flow connection for
+    // this authority. VS Code calls resolve() again when opening a new
+    // folder on the same remote; reconnecting from scratch would kill the
+    // server and re-prompt. The session path handles this earlier (in
+    // resolve(), before acquireTransport) to avoid bumping the shared
+    // refcount; this is the legacy check for the non-session path.
+    //
+    // Probe before reuse, same as the session-path fast-path and
+    // acquireTransport: the ssh child's TCP can be dead (after apex sleep)
+    // while `dead` is still false. On failure mark dead and fall through
+    // to a fresh acquireTransport + createTransport, instead of returning a
+    // stale makeConnection that ECONNREFUSEDs into vscode's permanent-error
+    // dialog.
     const prev = this.connections.get(authority);
-    if (prev && !prev.dead) {
+    if (prev && !prev.dead && !prev.shared.dead) {
+      let prevAlive = true;
+      try {
+        const r = await prev.shared.conn.exec("true", 5_000, true);
+        if (r.exitCode !== 0 && r.exitCode !== null) prevAlive = false;
+      } catch {
+        prevAlive = false;
+      }
+      if (prevAlive) {
+        this.logger.info(
+          `[resolve] reusing existing connection for ${authority}`,
+        );
+        return {
+          makeConnection: prev.makeConnection,
+          connectionToken: prev.connectionToken,
+          ...(prev.extensionHostEnv
+            ? { extensionHostEnv: prev.extensionHostEnv }
+            : {}),
+        };
+      }
       this.logger.info(
-        `[resolve] reusing existing connection for ${authority}`,
+        `[resolve] existing connection for ${authority} probe failed, marking dead`,
       );
-      return {
-        makeConnection: prev.makeConnection,
-        connectionToken: prev.connectionToken,
-        ...(prev.extensionHostEnv
-          ? { extensionHostEnv: prev.extensionHostEnv }
-          : {}),
-      };
+      prev.dead = true;
     }
 
-    // Register label formatter only when not reusing (avoids per-resolve leak).
+    // Register a label formatter for this authority: the window title shows
+    // the hostname (e.g. "root [SSH: example.com]") instead of a generic
+    // "root [SSH]". Registered per-connect; the hostname is encoded in the
+    // authority hex.
     if (!this.labelFormatters.has(authority)) {
       const disp = registerLabelFormatter(authority, hostLabel);
       this.labelFormatters.set(authority, disp);
     }
 
-    // Clean up any previous (dead) connection for this authority.
+    // Clean up any previous (dead) per-flow connection for this authority.
     if (prev) {
       this.killConnection(prev);
       this.connections.delete(authority);
     }
 
-    // Connect and install.
-    report("Connecting via SSH...");
-    const isSession = sshSettings().usePersistentConnection === true && sshSessionSecretReady();
-    const sessionSocksPort = isSession ? await findFreePort() : undefined;
-    const conn = this.connectionFactory!(dest, {
-      logger: this.logger,
-      ...this.connectionExtras(),
-      ...this.askpassOptions(askpass),
-      ...(sessionSocksPort ? { socksPort: sessionSocksPort } : {}),
-    });
-    await conn.connect();
-
-    report("Ensuring server is installed...");
-    const installResult = await ensureServerInstalled(
-      conn,
-      platform,
-      productInfo,
-      this.logger,
-      this.extensionPath,
-      {
-        onDownloadProgress: (received, total) => {
-          if (total) {
-            const pct = Math.floor((received / total) * 100);
-            const mb = (received / 1_048_576).toFixed(1);
-            const totalMb = (total / 1_048_576).toFixed(0);
-            report(`Downloading server... ${pct}% (${mb}/${totalMb} MB)`);
-          } else {
-            const mb = (received / 1_048_576).toFixed(1);
-            report(`Downloading server... ${mb} MB`);
-          }
-        },
-        onPhase: (phase) => {
-          if (phase === "verifying-checksum") {
-            report("Verifying server checksum...");
-          } else if (phase === "extracting") {
-            report("Extracting server tarball...");
-          } else if (phase === "verifying") {
-            report("Verifying server install...");
-          }
-        },
-      },
-    );
-
-    // Mutable connection state assigned across the phases below.
-    let forwardProcess: ChildProcess | undefined;
-    let socksPort = 0;
-    let tunnelPort = 0;
-    let tunnelToken = "";
-    let activeTunnelClient: SshTunnelClient | undefined;
-    let restartingTunnel = false;
-    // Set once connState exists (below); the restart path reads it lazily.
-    let connStateRef: RemoteConnection | undefined;
-    let markTunnelDead: () => void = () => {};
-
-    // Start the tunnel and install a fresh client whose heartbeat reports
-    // unreachable. Used for the initial start and for in-place restarts.
-    // Throws if startSshTunnel fails.
-    const startTunnelClient = async (): Promise<void> => {
-      const tunnel = await this.startSshTunnel(
-        conn,
-        installResult.home,
-        installResult.installPath,
-      );
-      tunnelPort = tunnel.port;
-      tunnelToken = tunnel.token;
-      const client = new SshTunnelClient({
-        socksPort,
-        tunnelPort,
-        token: tunnelToken,
-        logger: this.logger,
-        logFilePath: this.sshSessionDeps?.dataDir
-          ? path.join(this.sshSessionDeps.dataDir, `${dest.host}.tunnel-client.log`)
-          : undefined,
-        onUnreachable: () => {
-          void handleTunnelUnreachable();
-        },
-      });
-      conn.setTunnelClient?.(client);
-      if (connStateRef) {
-        connStateRef.tunnelPort = tunnelPort;
-        connStateRef.tunnelToken = tunnelToken;
-      }
-      activeTunnelClient = client;
+    const conn = shared.conn;
+    const installResult = {
+      home: shared.home,
+      arch: shared.arch,
+      installPath: shared.installPath,
     };
-
-    // The heartbeat says the tunnel is gone. VS Code won't notice: its
-    // connection is to the reh server, not our tunnel, so nothing calls
-    // resolve()/makeConnection() and a dead flag would just sit there.
-    // Repair in place: start a fresh tunnel and swap the client. Only if
-    // that fails, mark dead.
-    const handleTunnelUnreachable = async (): Promise<void> => {
-      if (restartingTunnel || connStateRef?.dead) return;
-      restartingTunnel = true;
-      this.logger.error(
-        "[health] tunnel unreachable - restarting tunnel in place",
-      );
-      try {
-        const old = activeTunnelClient;
-        await startTunnelClient();
-        old?.dispose();
-        this.logger.info(
-          `[health] tunnel restarted in place on port ${tunnelPort}`,
-        );
-      } catch (err) {
-        this.logger.error(
-          `[health] tunnel restart failed: ${err instanceof Error ? err.message : String(err)} - marking connection dead`,
-        );
-        markTunnelDead();
-      } finally {
-        restartingTunnel = false;
-      }
-    };
-
-    // Start the SshTunnel early on the session path, right after the
-    // install (which gives us node on the remote). Starting before
-    // copyAuthFiles/writeConnectionTokenFile lets those route through the
-    // tunnel (binary HTTP-over-SOCKS5) instead of the base64 control-shell
-    // hack. The tunnel's own script upload still uses conn.putFile
-    // (base64): the tunnel isn't up yet, and setTunnelClient runs only
-    // after startSshTunnel so its bootstrap can't recurse through itself.
-    if (isSession) {
-      const earlySocksPort = conn.getSocksPort?.() ?? sessionSocksPort!;
-      await waitForPort(earlySocksPort, 10_000);
-      socksPort = earlySocksPort;
-      try {
-        await startTunnelClient();
-        this.logger.info(
-          `[resolve] ssh tunnel on port ${tunnelPort} (putFile/execWithStdin routed through tunnel)`,
-        );
-      } catch (err) {
-        this.logger.info(
-          `[resolve] ssh tunnel failed to start: ${(err as Error).message} (falling back to base64)`,
-        );
-      }
-    }
 
     // Acquire the resolve lock and probe for an existing/zombie server in
     // one round-trip. Two parallel resolves to the same install path would
@@ -472,6 +482,7 @@ export class SshRemoteResolver {
       conn,
       installResult.home,
       installResult.installPath,
+      shared.transportClient,
     );
     this.logger.info(`[lifecycle] ${lockProbe.log}`);
     const locked = lockProbe.locked;
@@ -530,7 +541,7 @@ export class SshRemoteResolver {
       const suffix = `-${path.basename(installResult.installPath)}`;
       tokenFile = `${installResult.home}/.ssh-remote/conn-token${suffix}`;
       try {
-        if (isSession) {
+        if (shared.isSession) {
           const port = await this.startServerSession(
             conn,
             installResult.home,
@@ -538,6 +549,7 @@ export class SshRemoteResolver {
             productInfo.serverApplicationName,
             tokenFile,
             connectionToken,
+            shared.transportClient,
           );
           remotePort = port;
           serverProcess = undefined;
@@ -561,6 +573,7 @@ export class SshRemoteResolver {
             installResult.home,
             installResult.installPath,
             this.logger,
+            shared.transportClient,
           );
         }
         throw err;
@@ -568,173 +581,100 @@ export class SshRemoteResolver {
     }
 
     // Write PID/port files for a new server, and release the resolve lock,
-    // in one round-trip. Skipped when reusing an existing server.
-    const agent: AgentForward = {
-      home: installResult.home,
-      link: agentLinkPath(installResult.home, this.agentLinkId(authority)),
-    };
-    let agentForwarded = false;
+    // in one round-trip. Skipped when reusing an existing server. The agent
+    // forward link lives on the shared transport (set in createTransport).
     try {
-    if (!lockProbe.reusePort) {
-      const fin = await finalizeServerStart(
-        conn,
-        installResult.home,
-        installResult.installPath,
-        remotePort,
-        { releaseLock: locked },
-      );
-      this.logger.info(`[lifecycle] ${fin.log}`);
-    } else if (locked) {
-      // Reused an existing server; release the lock we acquired.
-      await releaseResolveLock(
-        conn,
-        installResult.home,
-        installResult.installPath,
-        this.logger,
-      );
-    }
-
-    // Open a SOCKS dynamic forward (ssh -D <port>). Core calls
-    // makeConnection() for each server-protocol connection it needs; each
-    // call does a SOCKS5 CONNECT to 127.0.0.1:remotePort through this proxy.
-    // The forward also owns this window's forwarded agent socket.
-    report("Starting SOCKS forward...");
-    if (isSession) {
-      // Session: the -D is folded into the ssh child. No separate process.
-      // socksPort was assigned earlier (before the tunnel start) so the
-      // tunnel client could reach the remote service. Only assign here if
-      // the early start was skipped (e.g. tunnel failed and socksPort was
-      // never set).
-      if (!socksPort) {
-        socksPort = conn.getSocksPort?.() ?? sessionSocksPort!;
-        await waitForPort(socksPort, 10_000);
+      if (!lockProbe.reusePort) {
+        const fin = await finalizeServerStart(
+          conn,
+          installResult.home,
+          installResult.installPath,
+          remotePort,
+          { releaseLock: locked },
+          shared.transportClient,
+        );
+        this.logger.info(`[lifecycle] ${fin.log}`);
+      } else if (locked) {
+        // Reused an existing server; release the lock we acquired.
+        await releaseResolveLock(
+          conn,
+          installResult.home,
+          installResult.installPath,
+          this.logger,
+          shared.transportClient,
+        );
       }
-      // Agent forward: one-shot exec in the control shell. The
-      // session's ssh child keeps the session (and forwarded agent
-      // socket) alive, so no keep-alive loop is needed (unlike
-      // startSocksForward).
-      const agentCmd = agentForwardCommandOneshot(agent.home, agent.link);
-      const agentResult = await conn.exec(agentCmd.command);
-      agentForwarded = parseAgentForwardReady(agentResult.stdout, agentCmd.marker) ?? false;
-      this.logger.info(
-        `[resolve] SOCKS proxy on 127.0.0.1:${socksPort} -> remote:${remotePort} (session, agent=${agentForwarded})`,
-      );
-    } else {
-      socksPort = await findFreePort();
-      const started = this.startSocksForward(conn, socksPort, agent);
-      forwardProcess = started.process;
-
-      // Wait for the SOCKS proxy and the remote agent report.
-      [, agentForwarded] = await Promise.all([
-        waitForPort(socksPort, 10_000),
-        started.agentReady,
-      ]);
-      this.logger.info(
-        `[resolve] SOCKS proxy on 127.0.0.1:${socksPort} -> remote:${remotePort}`,
-      );
-    }
     } catch (err) {
       if (serverProcess) serverProcess.kill();
-      if (forwardProcess) forwardProcess.kill();
       throw err;
     }
 
-    // Build the mutable connection object the monitor updates in place.
-    const connState: RemoteConnection = {
+    // Build the per-flow connection state.
+    const flow: RemoteConnection = {
+      shared,
+      key: authority,
+      kind: "resolve",
       serverProcess,
-      forwardProcess,
-      socksPort,
       remotePort,
       tokenFile,
-      conn,
-      dead: false,
-      isSession,
-      monitor: undefined as any, // set below
-      askpass,
-      home: installResult.home,
-      installPath: installResult.installPath,
-      makeConnection: undefined as any, // set below
       connectionToken,
       ownsServer: !lockProbe.reusePort,
-      agent,
-      tunnelPort,
-      tunnelToken,
-      // Terminals get SSH_AUTH_SOCK from the resolver env (VS Code sends it
-      // with every remote terminal create, overriding the server's env), so
-      // each window uses its own symlink. Only set when a forwarded agent
-      // exists, so a remote-local agent isn't overridden.
-      extensionHostEnv: agentForwarded
-        ? { SSH_AUTH_SOCK: agent.link }
+      extensionHostEnv: shared.agentForwarded
+        ? { SSH_AUTH_SOCK: shared.agent!.link }
         : undefined,
-    };
-    connStateRef = connState;
-
-    // Attach exit listeners to detect process death immediately, not minutes
-    // later when core calls makeConnection() or the monitor's periodic probe
-    // runs. Sets `dead`; makeConnection() fast-fails and triggers core's
-    // reconnect.
-    this.attachExitListeners(connState, hostLabel);
-
-    // Fallback for the tunnel path: if an in-place restart cannot be done
-    // (e.g. SSH itself is gone), mark the connection dead so a later core
-    // reconnect re-resolves instead of reusing a dead connection.
-    markTunnelDead = () => {
-      if (connState.dead) return;
-      this.logger.error(
-        "[health] ssh tunnel unreachable - marking connection dead",
-      );
-      connState.dead = true;
-      report("Reconnecting...");
+      makeConnection: undefined as any,
+      dead: false,
     };
 
-    // Start the health monitor. On sleep/wake, it probes and repairs the
-    // SOCKS forward if needed, or marks dead to trigger a core reconnect.
-    const monitor = new ConnectionMonitor(
-      connState,
-      {
-        findFreePort,
-        startSocksForward: (c, p, a) => this.startSocksForward(c, p, a),
-        waitForPort,
-      },
-      this.logger,
-      (msg) => report(msg),
-    );
-    connState.monitor = monitor;
-    monitor.start();
+    // Attach exit listener on the REH server process (per-flow). The
+    // shared forward's exit listener is attached in `createTransport`.
+    this.attachFlowExitListeners(flow, hostLabel);
 
-    // Store the connection for cleanup on reconnect/deactivate.
-    this.connections.set(authority, connState);
+    // Register with the shared transport so its death propagates.
+    shared.flows.add(flow);
+
+    // Store the per-flow connection for cleanup on reconnect/deactivate.
+    this.connections.set(authority, flow);
 
     report("Connected");
 
     // Return ManagedResolvedAuthority: core calls makeConnection() per
     // connection it needs; each SOCKS-connects to the server's port.
-    // Reads from connState, picking up the monitor's in-place repairs
-    // (new socksPort/forwardProcess) transparently.
+    // Reads socksPort from the shared transport (picks up the monitor's
+    // in-place repairs) and remotePort from the per-flow state.
     const makeConnection = async (): Promise<any> => {
-      if (connState.dead) {
-        throw new Error(
+      if (flow.dead || flow.shared.dead) {
+        // Shape as ECONNREFUSED+connect so vscode's reconnect loop treats
+        // this as retryable and re-resolves (remoteAgentConnection.ts).
+        // A plain Error hits the catch-all and surfaces a permanent-error
+        // dialog. On retry, getAddress() re-calls resolveAuthority, which
+        // re-enters resolve(); the fast-path sees existing.dead and falls
+        // through to acquireTransport, which probes and rebuilds.
+        const err = new Error(
           `SSH connection to ${hostLabel} is dead - triggering reconnect`,
         );
+        (err as any).code = "ECONNREFUSED";
+        (err as any).syscall = "connect";
+        throw err;
       }
       this.logger.info(
-        `[resolve] makeConnection() -> SOCKS5 to 127.0.0.1:${connState.remotePort} via :${connState.socksPort}`,
+        `[resolve] makeConnection() -> SOCKS5 to 127.0.0.1:${flow.remotePort} via :${flow.shared.socksPort}`,
       );
       const socket = await socks5Connect(
         "127.0.0.1",
-        connState.socksPort,
+        flow.shared.socksPort,
         "127.0.0.1",
-        connState.remotePort,
+        flow.remotePort,
       );
       return wrapSocket(socket);
     };
-    connState.makeConnection = makeConnection;
+    flow.makeConnection = makeConnection;
 
     return {
       makeConnection,
       connectionToken,
-      ...(connState.extensionHostEnv
-        ? { extensionHostEnv: connState.extensionHostEnv }
+      ...(flow.extensionHostEnv
+        ? { extensionHostEnv: flow.extensionHostEnv }
         : {}),
     };
   }
@@ -887,6 +827,7 @@ export class SshRemoteResolver {
     serverApp: string,
     tokenFile: string,
     connectionToken: string,
+    transportClient?: TransportClient,
   ): Promise<number> {
     const serverScript = `${installPath}/bin/${serverApp}`;
     const toolsDir = remoteToolsDir(home);
@@ -941,6 +882,14 @@ export class SshRemoteResolver {
     // (nohup so it survives), watches the log, and writes the port to
     // the ready file via temp + mv. The wrapper itself is backgrounded
     // so this exec returns immediately.
+    //
+    // rm the ready file first: a prior resolve may have left a stale
+    // port in it. The Go transport's waitForFile polls for "file exists
+    // and non-empty" and would return the stale content immediately,
+    // handing the resolver a port from a dead server. Removing it here
+    // guarantees waitForFile blocks until the new wrapper writes the
+    // current server's port.
+    await conn.exec(`rm -f ${shellQuote(readyFile)}`);
     const cmd =
       `${envExports ? envExports + "; " : ""}` +
       `nohup ${sh} ${shellQuote(wrapperRemote)} ${shellQuote(toolsDir)} ${shellQuote(startCmd)} ${shellQuote(logFile)} ${shellQuote(readyFile)} > /dev/null 2>&1 &`;
@@ -948,81 +897,335 @@ export class SshRemoteResolver {
     this.logger.info(`[resolve] starting server (session): ${startCmd}`);
     await conn.exec(cmd);
 
-    // Poll the ready file for the port. Short execs that interleave.
+    // Wait for the ready file. On the session path the transport is up by
+    // this point (onProbed threw if it failed to start), so a single
+    // waitForFile call replaces the poll loop of `cat` round-trips. On the
+    // non-session path there is no transport, so we fall back to the poll
+    // loop.
+    //
+    // The session path must NOT fall back to the poll loop when waitForFile
+    // fails or returns malformed content. Doing so silently routes around
+    // the transport (the same anti-pattern that masked the handlePutFile
+    // mkdir bug behind a confusing "Tarball extraction failed" 30s later).
+    // Surface the real failure so the user sees the cause, not a symptom.
+    if (transportClient) {
+      let body: Buffer;
+      try {
+        body = await transportClient.waitForFile(readyFile, 60_000);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `[resolve] waitForFile failed: ${msg}`,
+        );
+        throw new Error(
+          `Failed to wait for the server-ready file via the Go transport: ${msg}. ` +
+            `The session path requires the transport; falling back to the poll ` +
+            `loop would mask the real failure. See the log for details.`,
+        );
+      }
+      const trimmed = body.toString("utf-8").trim();
+      const port = parseInt(trimmed, 10);
+      if (!Number.isFinite(port) || port <= 0) {
+        this.logger.error(
+          `[resolve] server-ready file contained malformed port: ${JSON.stringify(trimmed)}`,
+        );
+        throw new Error(
+          `Server-ready file contained a malformed port (got ${JSON.stringify(trimmed)}). ` +
+            `The transport returned a non-numeric or empty response; the ` +
+            `server wrapper may have written garbage. See the remote server ` +
+            `log (${logFile}) for details.`,
+        );
+      }
+      this.logger.info(`[resolve] server reported port ${port} (session)`);
+      await this.verifyServerPort(conn, port, logFile);
+      return port;
+    }
+
+    // Non-session path: poll the ready file via the control shell.
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       await sleep(1000);
       const result = await conn.exec(`cat ${shellQuote(readyFile)} 2>/dev/null`, undefined, true);
       const port = parseInt(result.stdout.trim(), 10);
       if (port > 0) {
-        this.logger.info(`[resolve] server started on port ${port} (session)`);
+        this.logger.info(`[resolve] server reported port ${port} (session)`);
+        await this.verifyServerPort(conn, port, logFile);
         return port;
       }
     }
-    throw new Error("Timed out waiting for server to start (session)");
+    const tail = await conn.exec(
+      `tail -n 20 ${shellQuote(logFile)} 2>/dev/null`,
+      undefined,
+      true,
+    );
+    throw new Error(
+      `Timed out waiting for server to start (session); log tail:\n${tail.stdout}`,
+    );
+  }
+
+  /** Verify the server port is reachable through the SOCKS forward before
+   *  handing it to VS Code. Shared between the waitForFile and poll paths.
+   *  `logFile` is tailed on failure for diagnostics. Throws on unreachable
+   *  so the resolver doesn't hand VS Code a port nothing is listening on
+   *  (which would cause every subsequent reconnect to fail with
+   *  "Connection refused" forever). */
+  private async verifyServerPort(
+    conn: ISshConnection,
+    port: number,
+    logFile: string,
+  ): Promise<void> {
+    const socksPort = conn.getSocksPort?.() ?? 0;
+    if (socksPort > 0) {
+      const reachable = await this.waitForRemotePort(socksPort, port, 10_000);
+      if (reachable) {
+        this.logger.info(`[resolve] server port ${port} reachable`);
+      } else {
+        const tail = await conn.exec(
+          `tail -n 20 ${shellQuote(logFile)} 2>/dev/null`,
+          undefined,
+          true,
+        );
+        this.logger.error(
+          `[resolve] server reported port ${port} but it is not reachable; log tail:\n${tail.stdout}`,
+        );
+        throw new Error(
+          `Server reported port ${port} but it is not reachable ` +
+            `through SOCKS ${socksPort}. See the remote server log ` +
+            `(${logFile}) for details.`,
+        );
+      }
+    }
+    this.logger.info(`[resolve] server started on port ${port} (session)`);
+  }
+
+  /** Dial 127.0.0.1:<port> on the remote through the SOCKS forward,
+   *  retrying until it connects or the deadline passes. */
+  private async waitForRemotePort(
+    socksPort: number,
+    port: number,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const sock = await socks5Connect(
+          "127.0.0.1",
+          socksPort,
+          "127.0.0.1",
+          port,
+          2000,
+        );
+        sock.destroy();
+        return true;
+      } catch {
+        await sleep(250);
+      }
+    }
+    return false;
   }
 
   /**
-   * Bootstrap the SshTunnel service on the remote. Ships the script,
-   * writes a bearer token, starts it with the remote node binary,
-   * and polls for the port. Returns the port + token for the client.
+   * Bootstrap the Go transport server on the remote. Ships the binary
+   * (base64-over-shell, one-time), writes a bearer token, starts it, and
+   * polls for the port. Returns the port + token for the client.
    *
-   * Session path only. The tunnel handles file transfers and
-   * spawn-with-stdin, unclogging the control shell. Separate lifecycle
-   * from the IDE server: own port file, own token file.
+   * Session path only. Replaces the ssh session control shell and the
+   * HTTP tunnel.
+   *
+   * `socksPort` is the session's local SOCKS5 forward. When non-zero, the
+   * resolver probes a still-running transport from a prior session first
+   * and reuses it (port + token) instead of re-shipping the binary and
+   * orphaning the old detached process. Zero (non-session) skips the probe
+   * and keeps the legacy standalone-transport-per-flow behavior intact.
    */
-  private async startSshTunnel(
+  private async startTransport(
     conn: ISshConnection,
     home: string,
-    installPath: string,
+    arch: string,
+    socksPort: number,
   ): Promise<{ port: number; token: string }> {
-    const toolsDir = remoteToolsDir(home);
     const remoteDirName = `${home}/.ssh-remote`;
-    const scriptRemote = `${remoteDirName}/sshTunnel.js`;
-    const tokenFile = `${remoteDirName}/ssh-tunnel-token`;
-    const portFile = `${remoteDirName}/ssh-tunnel-port`;
-    const pidFile = `${remoteDirName}/ssh-tunnel-pid`;
-    const logFile = `${remoteDirName}/ssh-tunnel.log`;
-    const nodeBin = `${installPath}/node`;
+    const binRemote = `${remoteDirName}/zygos-tunnel-${arch}`;
+    const metaFile = `${remoteDirName}/tunnel-meta.json`;
+    const logFile = `${remoteDirName}/tunnel.log`;
 
-    // Ship the tunnel script. Strip CR (Windows source).
-    const scriptRaw = fs.readFileSync(this.sshSessionDeps!.tunnelScriptPath);
-    const scriptContent = scriptRaw.toString("utf-8").replace(/\r\n/g, "\n");
-    await conn.putFile!(scriptRemote, Buffer.from(scriptContent, "utf-8"), "0755");
+    // Session path only: probe the existing transport before re-shipping.
+    // A live transport from a prior resolve (reload, re-resolve, restart)
+    // is reused as-is: no binary ship, no --detach, no orphaned process.
+    // A dead/missing transport falls through to the ship-and-start path.
+    if (socksPort > 0) {
+      const probed = await this.probeExistingTransport(
+        conn,
+        remoteDirName,
+        socksPort,
+      );
+      if (probed) {
+        this.logger.info(
+          `[resolve] reusing existing go transport on port ${probed.port}`,
+        );
+        return probed;
+      }
+      // Stale meta file but a dead transport: try to reap the pid before
+      // re-shipping so we don't race a still-shutting-down process. The pid
+      // comes from the meta file read in probeExistingTransport; pass it
+      // through so we don't re-read the file here.
+      // (Fall through: probe returned null with no pid to reap.)
+    }
 
-    // Generate the bearer token and write it to a chmod 600 file.
-    const token = crypto.randomBytes(32).toString("hex");
-    await conn.putFile!(tokenFile, Buffer.from(token, "utf-8"), "0600");
+    // The transport ships before the busybox bootstrap now, so the remote
+    // dir doesn't exist yet. The first putFile (zygos-tunnel-x64.new)
+    // creates it: Go's doPut calls os.MkdirAll(filepath.Dir(p), 0755)
+    // before writing. No separate mkdir round-trip needed.
 
-    // Start the service in the background. --root bounds file operations
-    // to the user's home. --port 0 picks a free port, written to portFile.
-    // --pid-file lets killConnection terminate us on teardown; the idle
-    // timeout is the safety net for when that cannot run.
+    // Ship the binary. base64-over-shell: the transport isn't up yet, so
+    // putFile falls back to the control-shell path.
+    const localBin = path.join(
+      this.extensionPath,
+      "tools",
+      "tunnel",
+      `tunnel-linux-${arch}`,
+    );
+    const bin = fs.readFileSync(localBin);
+    this.logger.info(`[resolve] shipping go transport (${bin.length} bytes)...`);
+    const shipStart = Date.now();
+    // Write to a temp path, then rename over the target. Writing directly
+    // fails with ETXTBSY when a previous transport is still running from
+    // the target path (the reload case). Rename is atomic and the running
+    // process keeps the old inode.
+    const tmpBin = `${binRemote}.new`;
+    const putResult = await conn.putFile!(tmpBin, bin, "0755");
+    if (putResult.exitCode !== 0) {
+      throw new Error(
+        `Failed to ship go transport (exit ${putResult.exitCode}): ${putResult.stderr}`,
+      );
+    }
+    const mvResult = await conn.exec(
+      `mv -f ${shellQuote(tmpBin)} ${shellQuote(binRemote)}`,
+    );
+    if (mvResult.exitCode !== 0) {
+      throw new Error(
+        `Failed to install go transport: ${mvResult.stderr || mvResult.stdout}`,
+      );
+    }
+    this.logger.info(
+      `[resolve] go transport shipped in ${Date.now() - shipStart}ms`,
+    );
+
+    // Start detached. --detach makes the binary re-exec in a new session
+    // (no controlling terminal), so it survives the shell exit without
+    // nohup. --root bounds file ops to the user's home. --meta-file writes
+    // a single atomic JSON file with port/pid/token (replaces the prior
+    // tunnel-port + tunnel-pid pair; the resolver reads it in one cat).
+    // The binary self-generates its bearer token from crypto/rand and
+    // writes it into the meta file, so no --token-file is passed here.
     const cmd =
-      `export PATH=${shellQuote(toolsDir)}:$PATH; ` +
-      `nohup ${shellQuote(nodeBin)} ${shellQuote(scriptRemote)} ` +
-      `--token-file ${shellQuote(tokenFile)} ` +
+      `${shellQuote(binRemote)} --detach ` +
       `--port 0 ` +
-      `--port-file ${shellQuote(portFile)} ` +
-      `--pid-file ${shellQuote(pidFile)} ` +
-      `--idle-timeout-ms ${SSH_TUNNEL_IDLE_TIMEOUT_MS} ` +
+      `--meta-file ${shellQuote(metaFile)} ` +
+      `--idle-timeout-ms ${TRANSPORT_IDLE_TIMEOUT_MS} ` +
       `--root ${shellQuote(home)} ` +
-      `>> ${shellQuote(logFile)} 2>&1 &`;
-    this.logger.info(`[resolve] starting ssh tunnel`);
+      `>> ${shellQuote(logFile)} 2>&1`;
+    this.logger.info(`[resolve] starting go transport...`);
     await conn.exec(cmd);
+    this.logger.info(`[resolve] waiting for go transport port...`);
 
-    // Poll the port file. Short quiet execs that interleave.
+    // Poll the meta file. Short quiet execs that interleave. The transport
+    // isn't up yet (we're waiting for it to start), so this can't ride the
+    // transport's waitForFile op; it stays on the control shell.
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       await sleep(500);
-      const result = await conn.exec(`cat ${shellQuote(portFile)} 2>/dev/null`, undefined, true);
-      const port = parseInt(result.stdout.trim(), 10);
-      if (port > 0) {
-        this.logger.info(`[resolve] ssh tunnel started on port ${port}`);
-        return { port, token };
+      const result = await conn.exec(
+        `cat ${shellQuote(metaFile)} 2>/dev/null`,
+        undefined,
+        true,
+      );
+      const meta = parseMetaFile(result.stdout);
+      if (meta && meta.port > 0) {
+        this.logger.info(`[resolve] go transport started on port ${meta.port}`);
+        return { port: meta.port, token: meta.token };
       }
     }
-    throw new Error("Timed out waiting for ssh tunnel to start");
+    throw new Error("Timed out waiting for go transport to start");
+  }
+
+  /**
+   * Probe a still-running Go transport on the remote. Reads the single
+   * tunnel-meta.json file (port/pid/token in one read), then dials the
+   * transport's HEALTH op through the SOCKS5 forward. Returns
+   * `{ port, token, pid }` if alive, `null` otherwise. The pid is
+   * returned so the caller can reap a stale transport without re-reading
+   * the file.
+   *
+   * Session path only; the non-session path doesn't keep a transport
+   * around between flows.
+   */
+  private async probeExistingTransport(
+    conn: ISshConnection,
+    remoteDir: string,
+    socksPort: number,
+  ): Promise<{ port: number; token: string; pid: number } | null> {
+    const res = await conn.exec(
+      `cat ${shellQuote(`${remoteDir}/tunnel-meta.json`)} 2>/dev/null`,
+      undefined,
+      true,
+    );
+    // No meta file: no prior transport, ship a fresh one.
+    if (res.exitCode !== 0) return null;
+    // Meta file exists. The Go binary writes it atomically (temp + rename),
+    // so a partial/garbage file is a real error (disk corruption, partial
+    // write across filesystems, manual edit), not a "no transport" state.
+    // Returning null here would silently re-ship the binary and overwrite
+    // the corruption, the same "training wheels" pattern that masks real
+    // failures elsewhere. Throw so the user sees the corruption.
+    const meta = parseMetaFile(res.stdout);
+    if (!meta) {
+      throw new Error(
+        `tunnel-meta.json exists but is malformed (unparseable JSON or ` +
+          `missing fields): ${JSON.stringify(res.stdout.trim().slice(0, 200))}`,
+      );
+    }
+    if (meta.port <= 0) {
+      throw new Error(`tunnel-meta.json has an invalid port: ${meta.port}`);
+    }
+    if (!/^[0-9a-f]{64}$/.test(meta.token)) {
+      throw new Error(
+        `tunnel-meta.json has an invalid token (expected 64-char hex, ` +
+          `got length ${meta.token.length}: ${meta.token.slice(0, 8)}...)`,
+      );
+    }
+
+    const alive = await probeTransportAlive(socksPort, meta.port, meta.token);
+    if (!alive) {
+      // Dead transport: reap the pid so the binary doesn't race the new
+      // one we're about to ship. The pid came from the meta file read
+      // above; no second round-trip.
+      if (meta.pid > 0) {
+        await this.killStaleTransportPid(conn, meta.pid);
+      }
+      return null;
+    }
+    return { port: meta.port, token: meta.token, pid: meta.pid };
+  }
+
+  /**
+   * Kill a stale transport process by pid. Best-effort: a dead pid is a
+   * no-op. Used after probeExistingTransport reports the transport dead so
+   * a still-shutting-down process doesn't race the new one (ETXTBSY, port
+   * conflict, etc.). The pid comes from the meta file read in
+   * probeExistingTransport; no extra file read here.
+   *
+   * Session path only.
+   */
+  private async killStaleTransportPid(
+    conn: ISshConnection,
+    pid: number,
+  ): Promise<void> {
+    if (!pid || pid <= 0) return;
+    // `kill <pid> 2>/dev/null` is a no-op if the pid is gone. Don't wait
+    // for it to exit; the new transport listens on a fresh port, so
+    // there's no port race; the old one just exits on idle or SIGTERM.
+    await conn.exec(`kill ${pid} 2>/dev/null || true`, undefined, true);
   }
 
   /**
@@ -1088,46 +1291,64 @@ export class SshRemoteResolver {
    * Attach exit listeners so process death is detected immediately, not
    * at the next makeConnection() call or the monitor's 60s probe. Sets
    * `dead` instantly and shows a status bar item.
+   *
+   * Per-flow listener: only the REH server process (resolve flow). The
+   * shared forward's listener is attached in `createTransport`.
    */
-  private attachExitListeners(
-    connState: RemoteConnection,
+  private attachFlowExitListeners(
+    flow: RemoteConnection,
     hostLabel: string,
   ): void {
-    const onDead = (
-      what: string,
-      code: number | null,
-      signal: string | null,
-    ): void => {
-      if (connState.dead) return; // already marked
+    const serverProc = flow.serverProcess;
+    if (!serverProc) return;
+    serverProc.on("close", (code, signal) => {
+      if (flow.dead) return; // already marked
       this.logger.error(
-        `[health] ${what} exited (code=${code} signal=${signal}) - marking dead`,
+        `[health] Server process exited (code=${code} signal=${signal}) - marking flow dead`,
       );
-      connState.dead = true;
+      flow.dead = true;
       // Status bar item shown on death. Auto-disposes after 10s.
       const status = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Left,
         100,
       );
       status.text = `$(error) SSH: ${hostLabel} disconnected - reconnecting...`;
-      status.tooltip = `${what} exited (code=${code})`;
+      status.tooltip = `Server process exited (code=${code})`;
       status.show();
       setTimeout(() => status.dispose(), 10_000);
-    };
-
-    // Capture the process reference to detect monitor replacement (repair)
-    // vs. genuine death.
-    const forwardProc = connState.forwardProcess;
-    forwardProc?.on("close", (code, signal) => {
-      // If the monitor restarted the forward, connState.forwardProcess
-      // points to the new process; this is the old one exiting, expected
-      // during repair, not a failure.
-      if (connState.forwardProcess !== forwardProc) return;
-      onDead("SOCKS forward", code, signal);
     });
+  }
 
-    const serverProc = connState.serverProcess;
-    serverProc?.on("close", (code, signal) => {
-      onDead("Server process", code, signal);
+  /**
+   * Attach an exit listener on the shared SOCKS forward (non-session only).
+   * On close (and not a monitor-initiated restart), marks the shared
+   * transport dead - all flows' makeConnection() fast-fail and core
+   * reconnects each window.
+   */
+  private attachSharedForwardExitListeners(
+    shared: SharedTransport,
+    hostLabel: string,
+  ): void {
+    const forwardProc = shared.forwardProcess;
+    if (!forwardProc) return; // session: forward is inside the ssh child
+    forwardProc.on("close", (code, signal) => {
+      // If the monitor restarted the forward, shared.forwardProcess points
+      // to the new process; this is the old one exiting, expected during
+      // repair, not a failure.
+      if (shared.forwardProcess !== forwardProc) return;
+      if (shared.dead) return;
+      this.logger.error(
+        `[health] SOCKS forward exited (code=${code} signal=${signal}) - marking shared transport dead`,
+      );
+      shared.dead = true;
+      const status = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Left,
+        100,
+      );
+      status.text = `$(error) SSH: ${hostLabel} disconnected - reconnecting...`;
+      status.tooltip = `SOCKS forward exited (code=${code})`;
+      status.show();
+      setTimeout(() => status.dispose(), 10_000);
     });
   }
 
@@ -1246,7 +1467,8 @@ export class SshRemoteResolver {
    *
    * Returns an `ExecServer` backed by SSH exec + SOCKS. The child resolver
    * (e.g. artizo) calls methods on it to spawn processes, read/write files,
-   * and connect to TCP ports on the remote, all through this SSH connection.
+   * and connect to TCP ports on the remote, all through the shared SSH
+   * connection.
    *
    * No REH server here - the ExecServer runs commands on the SSH host, not
    * the VS Code server. The child resolver starts its own server (e.g.
@@ -1269,12 +1491,180 @@ export class SshRemoteResolver {
     // Show the output channel so logs are visible during chained resolves.
     this.logger.show();
 
-    // Start askpass before connecting so it's available in the catch block
-    // for host password eviction on failure.
-    const askpass = await this.maybeStartAskpass();
-
+    let shared: SharedTransport | undefined;
     try {
-      const isSession = sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+      // Share the transport with resolve() only on the experimental session
+      // path. The default non-session path keeps the legacy behavior: own
+      // ssh connection, no install probe, no agent forward (the resolve
+      // flow's install covers the host; execServer just relays through its
+      // own ssh -D).
+      const isSession =
+        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+      shared = await this.acquireTransport(authority, dest, () => {}, {
+        share: isSession,
+        install: isSession,
+        agent: isSession,
+      });
+      this.logger.info(`[resolveExecServer] SSH connected to ${hostLabel}`);
+
+      // Build the per-flow connection state. The execServer path has no
+      // REH server; the shared monitor covers the conn + forward.
+      const flow: RemoteConnection = {
+        shared,
+        key: `${authority}:execServer`,
+        kind: "execServer",
+        serverProcess: undefined,
+        remotePort: 0,
+        tokenFile: "",
+        connectionToken: "",
+        ownsServer: false,
+        makeConnection: undefined as any,
+        dead: false,
+      };
+
+      const execKey = `${authority}:execServer`;
+      const prev = this.connections.get(execKey);
+      if (prev) {
+        this.killConnection(prev);
+        this.connections.delete(execKey);
+      }
+      this.connections.set(execKey, flow);
+      shared.flows.add(flow);
+
+      // The transport client is shared with the resolve flow. Passed to
+      // SshExecServer.spawn for real streaming stdin/stdout/stderr.
+      // ZygosTransport (contract + zygos ops), handed to the exec server
+      // typed as the base TransportClient so it can only reach the contract.
+      const transportClient: TransportClient | undefined =
+        shared.transportClient;
+
+      const execServer = new SshExecServer(
+        shared.conn,
+        shared.socksPort,
+        this.logger,
+        transportClient,
+      );
+      this.logger.info(`[resolveExecServer] ready for ${hostLabel}`);
+      return execServer;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.info(`[resolveExecServer] failed: ${msg}`);
+
+      // Evict any host passwords cached during this attempt so a retry
+      // re-prompts instead of reusing a bad password. If `acquireTransport`
+      // failed, `createTransport` already evicted; otherwise evict via the
+      // shared askpass.
+      if (shared?.askpass?.usedHostPassword) {
+        this.logger.info(
+          "[resolveExecServer] evicting host password cache entries",
+        );
+        await shared.askpass.evictHostPasswords();
+      }
+
+      throw err;
+    }
+  }
+
+  // --- Shared transport ---
+
+  /**
+   * Acquire the shared transport for `authority`. Refcounted: the first
+   *  caller creates it (connect, probe, start transport, start -D forward,
+   *  build monitor); subsequent callers reuse it and bump the refcount.
+   *  Concurrent acquires dedup via an in-flight promise.
+   *
+   *  When `opts.share` is false the transport is standalone: not registered
+   *  in `this.transports`, no refcount, no dedup. Each flow owns its own.
+   *  This is the legacy non-session behavior.
+   */
+  private async acquireTransport(
+    authority: string,
+    dest: { host: string; user?: string; port?: number },
+    report: (msg: string) => void,
+    opts: TransportAcquireOptions,
+  ): Promise<SharedTransport> {
+    if (!opts.share) {
+      return this.createTransport(authority, dest, report, opts);
+    }
+    const existing = this.transports.get(authority);
+    if (existing && !existing.dead) {
+      // The shared transport may be stale: its ssh child's TCP can be
+      // dead (e.g. after apex sleep) while `dead` is still false, because
+      // the ConnectionMonitor's periodic probe didn't fire during sleep
+      // and the local server's shutdown timer may not have fired yet
+      // either. Probe the conn before reusing; on failure, mark dead and
+      // fall through to createTransport so callers (notably artizo's
+      // resolveExecServer path) don't get pinned to a dead SOCKS port.
+      // Same shape as SshSessionClient.tryReconnect's exec probe.
+      let alive = true;
+      try {
+        const r = await existing.conn.exec("true", 5_000, true);
+        if (r.exitCode !== 0 && r.exitCode !== null) alive = false;
+      } catch {
+        alive = false;
+      }
+      if (alive) {
+        existing.refs++;
+        this.logger.info(
+          `[resolve] reusing shared transport for ${authority} (refs=${existing.refs})`,
+        );
+        return existing;
+      }
+      this.logger.info(
+        `[resolve] shared transport for ${authority} probe failed, marking dead`,
+      );
+      existing.dead = true;
+    }
+
+    // If a creation is in flight, wait for it, then bump the refcount.
+    const inFlight = this.transportPromises.get(authority);
+    if (inFlight) {
+      const shared = await inFlight;
+      if (shared.dead) {
+        // It died in the meantime; recurse to create a fresh one.
+        return this.acquireTransport(authority, dest, report, opts);
+      }
+      shared.refs++;
+      return shared;
+    }
+
+    // Tear down any dead existing transport before creating a new one.
+    if (existing) {
+      this.killSharedTransport(existing);
+      this.transports.delete(authority);
+    }
+
+    const p = this.createTransport(authority, dest, report, opts);
+    this.transportPromises.set(authority, p);
+    try {
+      const shared = await p;
+      this.transports.set(authority, shared);
+      return shared;
+    } finally {
+      this.transportPromises.delete(authority);
+    }
+  }
+
+  /**
+   * Create a new (shared or standalone) transport for `authority`.
+   *  Connects, optionally probes + installs (`opts.install`), optionally
+   *  starts the Go transport (session path), starts the SOCKS forward
+   *  (non-session path), optionally does the agent forward (`opts.agent`),
+   *  and starts the monitor.
+   *
+   *  On failure, evicts host passwords, stops askpass, and rethrows.
+   */
+  private async createTransport(
+    authority: string,
+    dest: { host: string; user?: string; port?: number },
+    report: (msg: string) => void,
+    opts: TransportAcquireOptions,
+  ): Promise<SharedTransport> {
+    const askpass = await this.maybeStartAskpass();
+    try {
+      report("Connecting via SSH...");
+      const isSession =
+        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
       const sessionSocksPort = isSession ? await findFreePort() : undefined;
       const conn = this.connectionFactory!(dest, {
         logger: this.logger,
@@ -1283,176 +1673,294 @@ export class SshRemoteResolver {
         ...(sessionSocksPort ? { socksPort: sessionSocksPort } : {}),
       });
       await conn.connect();
-      this.logger.info(`[resolveExecServer] SSH connected to ${hostLabel}`);
 
-      // Start a SOCKS forward for tcpConnect().
-      let forwardProcess: ChildProcess | undefined;
-      let socksPort: number;
-      let tunnelPort = 0;
-      let tunnelToken = "";
-      let tunnelHome = "";
-      if (isSession) {
-        socksPort = conn.getSocksPort?.() ?? sessionSocksPort!;
-        await waitForPort(socksPort, 10_000);
-        // Bootstrap the SshTunnel service (session path only). Needs a
-        // node binary on the remote; ensureServerInstalled probes for
-        // the existing reh install (fork-agnostic) and returns its path.
-        // Failure is non-fatal: execServer falls back to the control shell.
-        try {
-          const platform = detectPlatform();
-          const productInfo = getProductInfo(platform);
-          const installResult = await ensureServerInstalled(
-            conn,
-            platform,
-            productInfo,
-            this.logger,
-            this.extensionPath,
-          );
-          tunnelHome = installResult.home;
-          const tunnel = await this.startSshTunnel(
-            conn,
-            installResult.home,
-            installResult.installPath,
-          );
-          tunnelPort = tunnel.port;
-          tunnelToken = tunnel.token;
-        } catch (err) {
-          this.logger.info(
-            `[resolveExecServer] ssh tunnel failed to start: ${(err as Error).message}`,
-          );
-        }
-      } else {
-        socksPort = await findFreePort();
-        forwardProcess = this.startSocksForward(conn, socksPort).process;
-        await waitForPort(socksPort, 10_000);
-      }
-      this.logger.info(`[resolveExecServer] SOCKS on :${socksPort}`);
-
-      // Build the mutable connection + monitor (same as resolve()).
-      // The execServer path has no server process; the monitor can only repair
-      // the SOCKS forward. If SSH dies it marks dead.
-      const connState: RemoteConnection = {
-        serverProcess: undefined,
-        forwardProcess,
-        socksPort,
-        remotePort: 0,
-        tokenFile: "",
+      const sharedRef: SharedTransport = {
+        authority,
         conn,
-        dead: false,
+        socksPort: 0,
+        forwardProcess: undefined,
         isSession,
-        monitor: undefined as any,
-        askpass,
-        home: tunnelHome,
-        installPath: "",
-        makeConnection: undefined as any,
-        connectionToken: "",
+        remotePort: 0,
+        serverProcess: undefined,
+        dead: false,
         ownsServer: false,
-        tunnelPort,
-        tunnelToken,
+        agent: undefined,
+        home: "",
+        arch: "",
+        installPath: "",
+        transportPort: 0,
+        transportToken: "",
+        transportClient: undefined,
+        askpass,
+        monitor: undefined as any,
+        refs: 1,
+        flows: new Set(),
+        restartingTransport: false,
+        agentForwarded: false,
       };
-      this.attachExitListeners(connState, dest.host);
+
+      const markSharedDead = (): void => {
+        if (sharedRef.dead) return;
+        sharedRef.dead = true;
+      };
+
+      let restartingTransport = false;
+      const startTransportClient = async (
+        home: string,
+        arch: string,
+      ): Promise<void> => {
+        const t = await this.startTransport(
+          conn,
+          home,
+          arch,
+          sharedRef.socksPort,
+        );
+        sharedRef.transportPort = t.port;
+        sharedRef.transportToken = t.token;
+        const client = new ZygosTransport({
+          socksPort: sharedRef.socksPort,
+          port: t.port,
+          token: t.token,
+          logger: this.logger,
+          onUnreachable: () => {
+            void handleTransportUnreachable();
+          },
+        });
+        conn.setTransportClient?.(client);
+        sharedRef.transportClient = client;
+      };
+
+      const handleTransportUnreachable = async (): Promise<void> => {
+        if (restartingTransport || sharedRef.dead) return;
+        restartingTransport = true;
+        sharedRef.restartingTransport = true;
+        this.logger.error(
+          "[health] transport unreachable - restarting in place",
+        );
+        try {
+          const old = sharedRef.transportClient;
+          await startTransportClient(sharedRef.home, sharedRef.arch);
+          old?.dispose();
+          this.logger.info(
+            `[health] transport restarted in place on port ${sharedRef.transportPort}`,
+          );
+        } catch (err) {
+          this.logger.error(
+            `[health] transport restart failed: ${err instanceof Error ? err.message : String(err)} - marking connection dead`,
+          );
+          markSharedDead();
+        } finally {
+          restartingTransport = false;
+          sharedRef.restartingTransport = false;
+        }
+      };
+
+      // Probe + install + (session) start transport so the tarball rides it.
+      // Skipped entirely for the legacy non-session execServer flow, which
+      // never installed (the resolve flow's install already covered the
+      // host; execServer just relays through its own ssh -D).
+      let agent: AgentForward | undefined;
+      if (opts.install) {
+        report("Ensuring server is installed...");
+        const platform = detectPlatform();
+        const productInfo = getProductInfo(platform);
+        const installResult = await ensureServerInstalled(
+          conn,
+          platform,
+          productInfo,
+          this.logger,
+          this.extensionPath,
+          {
+            onDownloadProgress: (() => {
+              let lastPct = -5;
+              return (received: number, total: number | undefined) => {
+                if (total) {
+                  const pct = Math.floor((received / total) * 100);
+                  // Report every 5%, plus the final 100%.
+                  if (pct < lastPct + 5 && pct < 100) return;
+                  lastPct = pct;
+                  const mb = (received / 1_048_576).toFixed(1);
+                  const totalMb = (total / 1_048_576).toFixed(0);
+                  report(`Downloading server... ${pct}% (${mb}/${totalMb} MB)`);
+                } else {
+                  const mb = (received / 1_048_576).toFixed(1);
+                  report(`Downloading server... ${mb} MB`);
+                }
+              };
+            })(),
+            onPhase: (phase) => {
+              if (phase === "verifying-checksum") {
+                report("Verifying server checksum...");
+              } else if (phase === "extracting") {
+                report("Extracting server tarball...");
+              } else if (phase === "verifying") {
+                report("Verifying server install...");
+              }
+            },
+            onProbed: async ({ home, arch }) => {
+              sharedRef.home = home;
+              sharedRef.arch = arch;
+              if (!isSession) return;
+              const sp = conn.getSocksPort?.() ?? sessionSocksPort!;
+              await waitForPort(sp, 10_000);
+              sharedRef.socksPort = sp;
+              // The transport is required on the session path, not optional.
+              // A silent fallback to base64 here used to hide transport-start
+              // failures (e.g. the handlePutFile mkdir bug) behind a confusing
+              // downstream error 30s later. Surface the real failure so the
+              // user sees the actual cause instead of a symptom.
+              try {
+                await startTransportClient(home, arch);
+                this.logger.info(
+                  `[resolve] go transport on port ${sharedRef.transportPort} (putFile/execWithStdin routed through transport)`,
+                );
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.logger.error(
+                  `[resolve] go transport failed to start: ${msg}`,
+                );
+                throw new Error(
+                  `Failed to start the Go transport on the remote: ${msg}. ` +
+                    `The session path requires the transport; falling back to ` +
+                    `base64 would mask the real failure. See the log for details.`,
+                );
+              }
+            },
+          },
+        );
+        sharedRef.home = installResult.home;
+        sharedRef.arch = installResult.arch;
+        sharedRef.installPath = installResult.installPath;
+        agent = {
+          home: installResult.home,
+          link: agentLinkPath(installResult.home, this.agentLinkId(authority)),
+        };
+        sharedRef.agent = agent;
+      }
+
+      // SOCKS forward + agent forward.
+      if (isSession) {
+        // Session: the -D is folded into the ssh child. socksPort was
+        // assigned earlier (before the transport start) so the transport
+        // client could reach the remote service. Only assign here if the
+        // early start was skipped.
+        if (!sharedRef.socksPort) {
+          sharedRef.socksPort = conn.getSocksPort?.() ?? sessionSocksPort!;
+          await waitForPort(sharedRef.socksPort, 10_000);
+        }
+        // Agent forward: one-shot exec in the control shell. The session's
+        // ssh child keeps the session (and forwarded agent socket) alive,
+        // so no keep-alive loop is needed (unlike startSocksForward).
+        if (opts.agent && agent) {
+          const agentCmd = agentForwardCommandOneshot(agent.home, agent.link);
+          const agentResult = await conn.exec(agentCmd.command);
+          sharedRef.agentForwarded =
+            parseAgentForwardReady(agentResult.stdout, agentCmd.marker) ?? false;
+        }
+        this.logger.info(
+          `[resolve] SOCKS proxy on 127.0.0.1:${sharedRef.socksPort} (session, agent=${sharedRef.agentForwarded})`,
+        );
+      } else {
+        report("Starting SOCKS forward...");
+        sharedRef.socksPort = await findFreePort();
+        const started = this.startSocksForward(
+          conn,
+          sharedRef.socksPort,
+          opts.agent ? agent : undefined,
+        );
+        sharedRef.forwardProcess = started.process;
+        // Wait for the SOCKS proxy and the remote agent report.
+        const [, agentForwarded] = await Promise.all([
+          waitForPort(sharedRef.socksPort, 10_000),
+          started.agentReady,
+        ]);
+        sharedRef.agentForwarded = agentForwarded;
+        this.logger.info(
+          `[resolve] SOCKS proxy on 127.0.0.1:${sharedRef.socksPort}`,
+        );
+      }
+
+      // Start the health monitor. On sleep/wake, it probes and repairs the
+      // SOCKS forward if needed, or marks dead to trigger a core reconnect.
       const monitor = new ConnectionMonitor(
-        connState,
+        sharedRef,
         {
           findFreePort,
           startSocksForward: (c, p, a) => this.startSocksForward(c, p, a),
           waitForPort,
         },
         this.logger,
+        (msg) => report(msg),
       );
-      connState.monitor = monitor;
+      sharedRef.monitor = monitor;
       monitor.start();
 
-      const execKey = `${authority}:execServer`;
-      const prev = this.connections.get(execKey);
-      if (prev) {
-        this.killConnection(prev);
-        this.connections.delete(execKey);
-      }
-      this.connections.set(execKey, connState);
+      // Attach exit listener on the shared forward (non-session). Detects
+      // process death immediately, not at the next 60s monitor probe.
+      this.attachSharedForwardExitListeners(sharedRef, dest.host);
 
-      // Build the tunnel client if the tunnel started. Passed to
-      // SshExecServer.spawn for streaming stdin without clogging the
-      // control shell.
-      const tunnelClient = tunnelPort > 0
-        ? new SshTunnelClient({
-            socksPort,
-            tunnelPort,
-            token: tunnelToken,
-            logger: this.logger,
-            logFilePath: this.sshSessionDeps?.dataDir
-              ? path.join(this.sshSessionDeps.dataDir, `${dest.host}.tunnel-client.log`)
-              : undefined,
-            onUnreachable: () => {
-              if (connState.dead) return;
-              this.logger.error(
-                "[health] ssh tunnel unreachable - marking exec connection dead",
-              );
-              connState.dead = true;
-            },
-          })
-        : undefined;
-      if (tunnelClient) {
-        conn.setTunnelClient?.(tunnelClient);
-      }
-
-      const execServer = new SshExecServer(conn, socksPort, this.logger, tunnelClient);
-      this.logger.info(`[resolveExecServer] ready for ${hostLabel}`);
-      return execServer;
+      this.logger.info(
+        `[resolve] shared transport for ${authority} ready (socks=${sharedRef.socksPort}, transport=${sharedRef.transportPort})`,
+      );
+      return sharedRef;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.info(`[resolveExecServer] failed: ${msg}`);
-
-      // Evict any host passwords cached during this attempt so a retry
-      // re-prompts instead of reusing a bad password.
       if (askpass?.usedHostPassword) {
-        this.logger.info(
-          "[resolveExecServer] evicting host password cache entries",
-        );
+        this.logger.info("[resolve] evicting host password cache entries");
         await askpass.evictHostPasswords();
       }
-
+      try {
+        void askpass?.stop();
+      } catch {
+        /* ignore */
+      }
       throw err;
     }
   }
 
-  /** Kill all active connections (called on deactivate). */
-  dispose(): void {
-    for (const [authority, conn] of this.connections) {
-      this.logger.info(`[resolve] cleaning up ${authority}`);
-      this.killConnection(conn);
+  /** Decrement the shared transport's refcount; tear down at zero. Called
+   *  from `killConnection` when a per-flow state is destroyed. */
+  private releaseTransport(shared: SharedTransport): void {
+    shared.refs--;
+    if (shared.refs <= 0) {
+      this.killSharedTransport(shared);
+      this.transports.delete(shared.authority);
     }
-    this.connections.clear();
-    for (const disp of this.labelFormatters.values()) disp.dispose();
-    this.labelFormatters.clear();
   }
 
-  private killConnection(conn: RemoteConnection): void {
+  /** Tear down a shared transport: stop the monitor, stop askpass, kill
+   *  the forward, close the conn, and clean up transport files on the
+   *  remote. Best-effort; safe to call on a partially-constructed shared. */
+  private killSharedTransport(shared: SharedTransport): void {
     try {
-      conn.monitor?.stop();
+      shared.monitor?.stop();
     } catch {
       /* ignore */
     }
     try {
-      void conn.askpass?.stop();
+      void shared.askpass?.stop();
     } catch {
       /* ignore */
     }
-    // Clean up SshTunnel files on the remote. Only when a tunnel started
-    // (tunnelPort > 0). Single rm -rf; best-effort, fire-and-forget.
-    if (conn.tunnelPort > 0 && conn.home) {
-      const dir = `${conn.home}/.ssh-remote`;
-      // Stop the tunnel process before removing its files. Best-effort:
-      // the pid file may be missing if the tunnel already self-exited on
-      // idle, or the ssh session may already be gone. The pid is digits
-      // only (we wrote it), so it is safe inline.
-      const pidFile = `${dir}/ssh-tunnel-pid`;
-      void conn.conn
-        .exec(`cat ${shellQuote(pidFile)} 2>/dev/null`, undefined, true)
+    try {
+      shared.transportClient?.dispose();
+    } catch {
+      /* ignore */
+    }
+    // Clean up transport files on the remote. Only when the transport
+    // started (transportPort > 0). Best-effort, fire-and-forget. The binary
+    // is left in place (reused next session); only the meta file and log
+    // are removed. The pid lives in tunnel-meta.json (single atomic JSON
+    // file with port/pid/token): read it, kill the process, then rm the
+    // meta + log.
+    if (shared.transportPort > 0 && shared.home) {
+      const dir = `${shared.home}/.ssh-remote`;
+      const metaFile = `${dir}/tunnel-meta.json`;
+      void shared.conn
+        .exec(`cat ${shellQuote(metaFile)} 2>/dev/null`, undefined, true)
         .then((r) => {
-          const pid = parseInt((r.stdout ?? "").trim(), 10);
-          if (Number.isFinite(pid) && pid > 0) {
-            void conn.conn.exec(`kill ${pid} 2>/dev/null`).catch(() => {
+          const meta = parseMetaFile(r.stdout);
+          if (meta && meta.pid > 0) {
+            void shared.conn.exec(`kill ${meta.pid} 2>/dev/null`).catch(() => {
               /* best effort */
             });
           }
@@ -1461,50 +1969,78 @@ export class SshRemoteResolver {
           /* best effort */
         });
       const cmd =
-        `rm -rf ${shellQuote(`${dir}/ssh-tunnel-pid`)} ` +
-        `${shellQuote(`${dir}/ssh-tunnel-token`)} ` +
-        `${shellQuote(`${dir}/ssh-tunnel-port`)} ` +
-        `${shellQuote(`${dir}/ssh-tunnel.log`)} ` +
-        `${shellQuote(`${dir}/tunnel-tmp`)}`;
-      void conn.conn.exec(cmd).catch(() => {
+        `rm -rf ${shellQuote(metaFile)} ` + `${shellQuote(`${dir}/tunnel.log`)}`;
+      void shared.conn.exec(cmd).catch(() => {
         /* best effort */
       });
     }
-    if (conn.isSession) {
+    if (shared.isSession) {
       // Session: closing the connection stops the local server and its
       // ssh child. No separate forward or server process to kill.
-      void conn.conn.close();
+      void shared.conn.close();
       return;
     }
     try {
-      conn.forwardProcess?.kill("SIGTERM");
+      shared.forwardProcess?.kill("SIGTERM");
     } catch {
       /* ignore */
     }
-    if (conn.ownsServer) {
+    void shared.conn.close();
+  }
+
+  /** Kill all active connections (called on deactivate). */
+  dispose(): void {
+    for (const [key, flow] of this.connections) {
+      this.logger.info(`[resolve] cleaning up ${key}`);
+      this.killConnection(flow);
+    }
+    this.connections.clear();
+    // Any leftover shared transports (shouldn't normally be any, since
+    // killConnection releases refs; but guard for safety).
+    for (const [authority, shared] of this.transports) {
+      this.logger.info(`[resolve] cleaning up shared transport ${authority}`);
+      this.killSharedTransport(shared);
+    }
+    this.transports.clear();
+    for (const disp of this.labelFormatters.values()) disp.dispose();
+    this.labelFormatters.clear();
+  }
+
+  private killConnection(flow: RemoteConnection): void {
+    const shared = flow.shared;
+    // Per-flow REH server cleanup (resolve flow that owns its server).
+    if (flow.kind === "resolve" && flow.ownsServer) {
       try {
-        conn.serverProcess?.kill("SIGTERM");
+        flow.serverProcess?.kill("SIGTERM");
       } catch {
         /* ignore */
       }
       // Only remove token/PID/port files if we started the server.
       // A reused server from another window still needs them.
-      void removeConnectionTokenFile(conn.conn, conn.tokenFile, this.logger);
-      if (conn.installPath) {
-        void removeServerMetadata(
-          conn.conn,
-          conn.home,
-          conn.installPath,
-          this.logger,
-        );
-        void releaseResolveLock(
-          conn.conn,
-          conn.home,
-          conn.installPath,
-          this.logger,
-        );
+      void removeConnectionTokenFile(shared.conn, flow.tokenFile, this.logger);
+      if (shared.installPath) {
+        const transport = shared.transportClient;
+        void Promise.all([
+          removeServerMetadata(
+            shared.conn,
+            shared.home,
+            shared.installPath,
+            this.logger,
+            transport,
+          ),
+          releaseResolveLock(
+            shared.conn,
+            shared.home,
+            shared.installPath,
+            this.logger,
+            transport,
+          ),
+        ]);
       }
     }
+    // Detach from the shared transport.
+    shared.flows.delete(flow);
+    this.releaseTransport(shared);
   }
 }
 
@@ -1560,6 +2096,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Parse the tunnel-meta.json file content. Returns null on missing/invalid
+ *  JSON so callers can treat a missing file as "no existing transport"
+ *  without a separate existence check. The Go binary writes this file
+ *  atomically (temp + rename) at startup with {port, pid, token}. */
+function parseMetaFile(
+  stdout: string,
+): { port: number; pid: number; token: string } | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  try {
+    const meta = JSON.parse(trimmed) as {
+      port?: number;
+      pid?: number;
+      token?: string;
+    };
+    if (
+      typeof meta.port !== "number" ||
+      typeof meta.pid !== "number" ||
+      typeof meta.token !== "string"
+    ) {
+      return null;
+    }
+    return { port: meta.port, pid: meta.pid, token: meta.token };
+  } catch {
+    return null;
+  }
+}
+
 // --- Registration ---
 
 /**
@@ -1598,7 +2162,6 @@ export function registerResolver(
   const sshSessionDeps: SshSessionDeps = {
     serverScriptPath: path.join(context.extensionPath, "dist", "localServer.js"),
     wrapperScriptPath: path.join(context.extensionPath, "scripts", "sshSession", "start-server.sh"),
-    tunnelScriptPath: path.join(context.extensionPath, "dist", "sshTunnel.js"),
     nodePath: process.execPath,
     dataDir: sshSessionDataDir,
   };

@@ -4,12 +4,11 @@ dist/**
 !dist/extension.js.map
 !dist/localServer.js
 !dist/localServer.js.map
-!dist/sshTunnel.js
-!dist/sshTunnel.js.map
 
 # Source / dev - not needed at runtime in the VSIX
 src/**
 test/**
+go/**
 research/**
 upstream/**
 docs/**
@@ -44,6 +43,9 @@ LICENSE.txt
 # Keep tools/busybox (static binaries shipped in VSIX)
 !tools/busybox/**
 tools/busybox/.downloaded
+
+# Keep tools/tunnel (Go transport binaries shipped in VSIX)
+!tools/tunnel/**
 
 # Git / OS cruft
 .gitignore

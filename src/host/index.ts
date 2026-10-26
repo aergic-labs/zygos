@@ -40,11 +40,28 @@ export function registerHostCommands(
 ): void {
   // --- Tree view ---
   const treeProvider = new SshHostTreeProvider(logger, folderHistory);
-  const treeView = vscode.window.createTreeView("zygos.hosts", {
-    treeDataProvider: treeProvider,
-    showCollapseAll: true,
-  });
-  context.subscriptions.push(treeView);
+  // The SSH Targets view is contributed with remoteName: "ssh-remote", so it
+  // only has a view descriptor in local windows and ssh-remote windows.
+  // In a devcontainer child window the view is not contributed, and
+  // createTreeView would toast "No view is registered with id: zygos.hosts".
+  // zygos can still activate there because artizo's resolver chains through
+  // resolveAuthority('ssh-remote+...'), firing onResolveRemoteAuthority:ssh-remote
+  // in the devcontainer exthost. Gate the view registration on the window's
+  // own remote authority to avoid the toast.
+  const remoteName = vscode.env.remoteName;
+  const viewContributedHere =
+    remoteName === undefined || remoteName === "ssh-remote";
+  if (viewContributedHere) {
+    const treeView = vscode.window.createTreeView("zygos.hosts", {
+      treeDataProvider: treeProvider,
+      showCollapseAll: true,
+    });
+    context.subscriptions.push(treeView);
+  } else {
+    logger.info(
+      `[host] skipping zygos.hosts tree view registration (remoteName=${remoteName || "none"})`,
+    );
+  }
 
   // Auto-refresh the tree when the history changes (capture after connect,
   // addFolders after explicit open, removeFolder after forget). Matches

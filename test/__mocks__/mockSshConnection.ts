@@ -19,6 +19,8 @@ export class MockSshConnection implements ISshConnection {
   connected = false;
   calls: string[] = [];
   stdinData: Map<string, Buffer> = new Map();
+  putFileCalls: { path: string; content: Buffer; mode?: string }[] = [];
+  private putFileResponses: Map<string, ExecResult> = new Map();
   private responses: Map<string, ExecResult> = new Map();
   private probeResponse:
     | { home: string; arch: string; busybox: string; installed: string; rcNoise: string }
@@ -33,6 +35,8 @@ export class MockSshConnection implements ISshConnection {
   spawns: { command: string | undefined; args: string[] }[] = [];
   private spawnStdout: string | undefined;
   private agentReport = "yes";
+  private socksPortFromOpts: number | undefined;
+  private transportClient: unknown;
 
   /**
    * Value the SOCKS forward's agent command reports after its ZYAGENT
@@ -45,7 +49,9 @@ export class MockSshConnection implements ISshConnection {
 
   constructor(
     private readonly options: SshConnectOptions = { host: "test@fake" },
-  ) {}
+  ) {
+    this.socksPortFromOpts = options.socksPort;
+  }
 
   /**
    * Set stdout data to emit from the next spawnProcess call that has a
@@ -107,17 +113,105 @@ export class MockSshConnection implements ISshConnection {
       throw new Error(`SSH connect failed: ${result.stderr}`);
     }
     this.connected = true;
+    // Session path: open a real TCP listener on opts.socksPort so
+    // waitForPort() succeeds.
+    if (this.socksPortFromOpts) {
+      const srv = net.createServer();
+      srv.unref();
+      srv.listen(this.socksPortFromOpts, "127.0.0.1");
+      this.socksServers.push(srv);
+    }
   }
 
   async exec(command: string, _timeoutMs?: number): Promise<ExecResult> {
+    // Mirror SshSession.exec's transport routing: when a transport client has
+    // been injected, route through it (`sh -c <command>`) so tests can assert
+    // that session-path bookkeeping execs ride the transport. Callers that
+    // pass a timeout stay on the control-shell path (the health monitor's
+    // ssh-alive ping).
+    if (this.transportClient && !_timeoutMs) {
+      const tc = this.transportClient as {
+        exec: (
+          cmd: string,
+          args: string[],
+        ) => Promise<{
+          stdout: Buffer;
+          stderr: Buffer;
+          exitCode: number;
+          signal: string | null;
+        }>;
+      };
+      const r = await tc.exec("sh", ["-c", command]);
+      return {
+        stdout: r.stdout.toString("utf-8"),
+        stderr: r.stderr.toString("utf-8"),
+        exitCode: r.exitCode,
+        signal: r.signal,
+      };
+    }
     this.calls.push(command);
     return this.match(command);
   }
 
   async execWithStdin(command: string, stdinData: Buffer): Promise<ExecResult> {
+    // Mirror SshSession.execWithStdin: route through the transport client
+    // when one is injected. The session path uses this for copyAuthFiles and
+    // writeConnectionTokenFile.
+    if (this.transportClient) {
+      const tc = this.transportClient as {
+        execWithStdin: (
+          cmd: string,
+          stdin: Buffer,
+        ) => Promise<{
+          stdout: Buffer;
+          stderr: Buffer;
+          exitCode: number;
+          signal: string | null;
+        }>;
+      };
+      const r = await tc.execWithStdin(command, stdinData);
+      return {
+        stdout: r.stdout.toString("utf-8"),
+        stderr: r.stderr.toString("utf-8"),
+        exitCode: r.exitCode,
+        signal: r.signal,
+      };
+    }
     this.calls.push(command);
     this.stdinData.set(command, stdinData);
     return this.match(command);
+  }
+
+  async putFile(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+  ): Promise<ExecResult> {
+    this.putFileCalls.push({ path: remotePath, content, mode });
+    // Allow tests to simulate a putFile failure (e.g. remote dir doesn't
+    // exist, disk full, permission denied) by registering a failing
+    // response for a path substring. Returns ok() by default to preserve
+    // existing happy-path tests.
+    for (const [substr, result] of this.putFileResponses) {
+      if (remotePath.includes(substr)) return result;
+    }
+    return ok();
+  }
+
+  /** Make the next putFile calls matching `substr` return `result` instead
+   *  of the default ok(). Used to exercise transport-start failure paths
+   *  (e.g. the binary ship failing because the remote dir doesn't exist). */
+  setPutFileResponse(substr: string, result: ExecResult): this {
+    this.putFileResponses.set(substr, result);
+    return this;
+  }
+
+  getSocksPort(): number {
+    return this.socksPortFromOpts ?? 0;
+  }
+
+  setTransportClient(client: unknown): void {
+    this.transportClient = client;
   }
 
   spawnProcess(_command?: string, _extraArgs: string[] = []): any {

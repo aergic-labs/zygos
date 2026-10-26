@@ -1,11 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "ignoreBinaries": ["ssh-keygen"],
+  "ignoreBinaries": ["ssh-keygen", "go"],
   "ignoreDependencies": ["ovsx"],
   "ignoreExportsUsedInFile": {
     "interface": true,
     "type": true,
-    "function": true
+    "function": true,
+    "class": true
   },
   "entry": [
     "src/host/index.ts",

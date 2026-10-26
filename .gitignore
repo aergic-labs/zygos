@@ -13,6 +13,16 @@ tools/busybox/.downloaded
 # Generated at build time
 tools/busybox/provenance.json
 
+# Built Go transport binaries (run: make tunnel)
+# Cross-compiled linux binaries land in tools/tunnel/ above; the Go sources
+# live in go/tunnel/. A stray `go build` in go/tunnel/ (Windows or linux,
+# default output name `zygos-tunnel` / `zygos-tunnel.exe`) is ignored so it
+# doesn't leak into the repo. The extension ships linux binaries only (built
+# by `make tunnel`, cross-compiled to tools/tunnel/, bundled into the VSIX,
+# never committed).
+tools/tunnel/
+/go/tunnel/zygos-tunnel*
+
 upstream/
 tmp/
 research/

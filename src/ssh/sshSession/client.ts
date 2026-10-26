@@ -52,6 +52,9 @@ export interface SshSessionClientOptions {
   dataDir: string;
   /** Logger. */
   logger: Logger;
+  /** Max wait (ms) for the ssh ready handshake. The caller floors this
+   *  when askpass is active so password entry isn't rushed. Default 30s. */
+  handshakeTimeoutMs?: number;
 }
 
 export class SshSessionClient {
@@ -104,6 +107,7 @@ export class SshSessionClient {
       logFilePath: this.logFilePath,
       shutdownTimeoutMs: SHUTDOWN_TIMEOUT_MS,
       keepaliveIntervalMs: KEEPALIVE_INTERVAL_MS,
+      handshakeTimeoutMs: this.opts.handshakeTimeoutMs,
     };
 
     this.opts.logger.info(`[ssh-session] spawning local server ipc=${this.ipcHandlePath}`);

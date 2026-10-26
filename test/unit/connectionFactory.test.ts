@@ -49,7 +49,6 @@ const noopLogger = {
 const sshSessionDeps = {
   serverScriptPath: "/fake/localServer.js",
   wrapperScriptPath: "/fake/start-server.sh",
-  tunnelScriptPath: "/fake/sshTunnel.js",
   nodePath: "/fake/node",
   dataDir: "/fake/sshSession",
 };

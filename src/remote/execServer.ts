@@ -11,15 +11,13 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import * as crypto from "node:crypto";
-import * as http from "node:http";
 import type { Logger } from "../common/logger";
 import type { ISshConnection, ExecResult } from "../ssh/connection";
 import { shellQuote } from "../remote/busybox";
 import { socks5Connect } from "../net/socks5";
 import { wrapSocket } from "../net/managedConnection";
 import { SimpleEvent } from "../common/event";
-import { SshTunnelClient, TunnelHttpError } from "../sshTunnel/client";
+import { TransportClient } from "../transport/client";
 
 // --- Types matching vscode.proposed.resolvers.d.ts ---
 
@@ -112,6 +110,27 @@ class ProcWriteStream implements WriteStream {
   }
 }
 
+/** Wraps a transport stream as a ReadStream. `onEnd` resolves on process
+ *  exit, since the transport has no per-stream end signal. */
+class TransportReadStream implements ReadStream {
+  private readonly event = new SimpleEvent<Uint8Array>();
+  readonly onEnd: Promise<void>;
+
+  constructor(
+    src: { onData(cb: (d: Buffer) => void): void },
+    onExit: Promise<unknown>,
+  ) {
+    this.onEnd = onExit.then(() => undefined);
+    src.onData((d) =>
+      this.event.fire(new Uint8Array(d.buffer, d.byteOffset, d.byteLength)),
+    );
+  }
+
+  get onDidReceiveMessage() {
+    return this.event.event;
+  }
+}
+
 /**
  * Buffers writes, flushes via conn.putFile on end(). For the session
  * path, where spawnProcess + stdin isn't available (control shell stdin
@@ -184,102 +203,26 @@ class TcpStream implements WriteStream, ReadStream {
   }
 }
 
-/** WriteStream over a tunnel PUT. Chunks stream to the request body;
- *  end() closes it, and the server finalizes the temp file. */
-class TunnelWriteStream implements WriteStream {
-  constructor(private readonly req: http.ClientRequest) {}
-  write(data: Uint8Array): void {
-    this.req.write(Buffer.from(data));
-  }
-  end(): void {
-    this.req.end();
-  }
-}
-
-/** ReadStream over a tunnel temp file. Polls GET /file?offset=N, fires
- *  onDidReceiveMessage for new bytes, ends when `exited` resolves. */
-class TunnelReadStream implements ReadStream {
-  private readonly event = new SimpleEvent<Uint8Array>();
-  readonly onEnd: Promise<void>;
-  private offset = 0;
-
-  constructor(
-    private readonly client: SshTunnelClient,
-    private readonly pathPromise: Promise<string>,
-    private readonly exited: Promise<string>,
-    private readonly logger: Logger,
-  ) {
-    this.onEnd = this.pollLoop();
-  }
-
-  private async pollLoop(): Promise<void> {
-    let path: string;
-    try {
-      path = await this.pathPromise;
-    } catch (err) {
-      this.logger.info(
-        `[execServer] tunnel read: spawn failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return;
-    }
-    let done = false;
-    this.exited.then(
-      () => { done = true; },
-      () => { done = true; },
-    );
-    while (!done) {
-      await this.readNew(path);
-      await sleep(100);
-    }
-    // Final read after the command exits.
-    await this.readNew(path);
-  }
-
-  private async readNew(path: string): Promise<void> {
-    try {
-      const content = await this.client.getFile(path, this.offset);
-      if (content.length > 0) {
-        this.offset += content.length;
-        this.event.fire(
-          new Uint8Array(content.buffer, content.byteOffset, content.byteLength),
-        );
-      }
-    } catch {
-      /* file not written yet */
-    }
-  }
-
-  get onDidReceiveMessage() {
-    return this.event.event;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // --- ExecServer ---
 
 export class SshExecServer {
-  private readonly tunnelClient: SshTunnelClient | undefined;
+  private readonly transportClient: TransportClient | undefined;
 
   constructor(
     private readonly conn: ISshConnection,
     private readonly socksPort: number | undefined,
     private readonly logger: Logger,
-    tunnelClient?: SshTunnelClient,
+    transportClient?: TransportClient,
   ) {
-    this.tunnelClient = tunnelClient;
+    this.transportClient = transportClient;
   }
 
   /** Spawn a command, returning streaming stdin/stdout/stderr.
    *
-   *  With a tunnel client: stdin goes to a temp file via PUT, the command
-   *  starts via POST /spawn, stdout/stderr/exit are polled over HTTP. Keeps
-   *  the control shell free and gives real stdin streaming.
+   *  With the transport: real streams over the Go bridge.
    *
-   *  Without a tunnel: spawn directly over SSH. Session path stdin is a
-   *  no-op (control shell stdin is shared). */
+   *  Without it: spawn directly over SSH. Session path stdin is a no-op
+   *  (control shell stdin is shared). */
   spawn(
     command: string,
     args: string[],
@@ -288,8 +231,8 @@ export class SshExecServer {
     const fullCmd = this.buildCommand(command, args, options);
     this.logger.info(`[execServer] spawn: ${fullCmd}`);
 
-    if (this.tunnelClient) {
-      return this.spawnViaTunnel(fullCmd, this.tunnelClient);
+    if (this.transportClient) {
+      return this.spawnViaTransport(fullCmd, this.transportClient);
     }
 
     const child = this.conn.spawnProcess(fullCmd);
@@ -318,115 +261,26 @@ export class SshExecServer {
     return Promise.resolve({ stdin, stdout, stderr, onExit });
   }
 
-  /** Spawn via the SshTunnel service; see {@link spawn}. */
-  private async spawnViaTunnel(
+  /** Spawn via the Go transport; see {@link spawn}. */
+  private async spawnViaTransport(
     fullCmd: string,
-    client: SshTunnelClient,
+    client: TransportClient,
   ): Promise<SpawnedCommand> {
-    const id = crypto.randomBytes(8).toString("hex");
-    const stdinPath = `.ssh-remote/tunnel-tmp/${id}.stdin`;
-
-    // Open a streaming PUT for stdin. Chunks go straight to the socket.
-    const { writer, done: putDone } = client.openPutFile(stdinPath);
-    const stdin = new TunnelWriteStream(writer);
-
-    // POST /spawn fires after the PUT completes (stdin closed). The
-    // command starts with the temp file as fd 0.
-    const spawnResponse = putDone.then(() =>
-      client.spawn({
-        command: "sh",
-        args: ["-c", fullCmd],
-        stdinPath,
-      }),
-    );
-
-    // Shared exit signal: exit-file content on success, reject if the
-    // tunnel dies. onExit and the read streams use it to stop polling.
-    let resolveExit: (value: string) => void;
-    let rejectExit: (err: Error) => void;
-    const exited = new Promise<string>((resolve, reject) => {
-      resolveExit = resolve;
-      rejectExit = reject;
-    });
-    // Nobody awaits `exited` directly; the read streams attach handlers.
-    // Swallow the rejection here so it is not reported as unhandled.
-    void exited.catch(() => {});
-
-    const onExit = spawnResponse.then(async (resp) => {
-      const exitContent = await this.pollTunnelFile(client, resp.exitPath);
-      resolveExit(exitContent);
-      // Format: "0" or "N:errmsg".
-      const colonIdx = exitContent.indexOf(":");
-      if (colonIdx > 0) {
-        const code = parseInt(exitContent.substring(0, colonIdx), 10);
-        const msg = exitContent.substring(colonIdx + 1);
-        this.logger.info(`[execServer] tunnel spawn exited: ${code} (${msg})`);
-        return { status: code, message: msg };
-      }
-      const code = parseInt(exitContent, 10);
-      if (code !== 0) this.logger.info(`[execServer] tunnel spawn exited: ${code}`);
-      else this.logger.debug(`[execServer] tunnel spawn exited: 0`);
-      return { status: code };
-    });
-    // Propagate failure to `exited` so the read streams stop; onExit
-    // still rejects for the caller.
-    onExit.catch((err) => {
-      rejectExit(err instanceof Error ? err : new Error(String(err)));
-    });
-
-    // stdout/stderr poll their temp files, stop when exited resolves.
-    const stdout = new TunnelReadStream(
-      client,
-      spawnResponse.then((r) => r.stdoutPath),
-      exited,
-      this.logger,
-    );
-    const stderr = new TunnelReadStream(
-      client,
-      spawnResponse.then((r) => r.stderrPath),
-      exited,
-      this.logger,
-    );
-
-    return { stdin, stdout, stderr, onExit };
-  }
-
-  /** Poll a tunnel temp file until it has content.
-   *
-   *  404 = not written yet, keep polling. Any other error is a real
-   *  failure; after MAX_TUNNEL_FAILURES in a row, reject so `onExit`
-   *  settles instead of spinning. */
-  private async pollTunnelFile(
-    client: SshTunnelClient,
-    filePath: string,
-  ): Promise<string> {
-    const MAX_TUNNEL_FAILURES = 300; // ~30s at 100ms poll interval
-    let consecutiveFailures = 0;
-    while (true) {
-      try {
-        const content = await client.getFile(filePath);
-        consecutiveFailures = 0;
-        const text = content.toString("utf-8").trim();
-        if (text) return text;
-      } catch (err) {
-        if (err instanceof TunnelHttpError && err.status === 404) {
-          // File not written yet; process may still be running.
-          consecutiveFailures = 0;
-        } else {
-          consecutiveFailures++;
-          if (consecutiveFailures >= MAX_TUNNEL_FAILURES) {
-            throw new Error(
-              `pollTunnelFile ${filePath} failed: tunnel unreachable after ${MAX_TUNNEL_FAILURES} attempts`,
-            );
-          }
-        }
-      }
-      await sleep(100);
-    }
+    const proc = await client.spawn("sh", ["-c", fullCmd]);
+    const onExit = proc.onExit.then((e) => ({ status: e.status }));
+    return {
+      stdin: proc.stdin,
+      stdout: new TransportReadStream(proc.stdout, onExit),
+      stderr: new TransportReadStream(proc.stderr, onExit),
+      onExit,
+    };
   }
 
   /** Get the remote environment + OS info. */
   async env(): Promise<ExecEnvironment> {
+    if (this.transportClient) {
+      return this.transportClient.env();
+    }
     const platResult = await this.conn.exec("uname -s");
     const platOut = platResult.stdout.trim();
     let osPlatform: string;
@@ -463,6 +317,9 @@ export class SshExecServer {
   /** Kill a process on the remote by PID. */
   async kill(processId: number): Promise<void> {
     this.logger.info(`[execServer] kill pid=${processId}`);
+    if (this.transportClient) {
+      return this.transportClient.kill(processId);
+    }
     await this.conn.exec(`kill ${processId}`);
   }
 
@@ -498,6 +355,9 @@ export class SshExecServer {
   readonly fs = {
     stat: async (path: string): Promise<FileStat> => {
       this.logger.debug(`[execServer] fs.stat: ${path}`);
+      if (this.transportClient) {
+        return this.transportClient.stat(path);
+      }
       const result = await this.conn.exec(
         `sh -c ${shellQuote('stat -c "%F %s %Y" "$1" 2>/dev/null || stat -f "%HT %z %m" "$1" 2>/dev/null')} sh ${shellQuote(path)}`,
       );
@@ -536,6 +396,9 @@ export class SshExecServer {
 
     mkdirp: async (path: string): Promise<void> => {
       this.logger.debug(`[execServer] fs.mkdirp: ${path}`);
+      if (this.transportClient) {
+        return this.transportClient.mkdir(path);
+      }
       const result = await this.conn.exec(`mkdir -p ${shellQuote(path)}`);
       if (result.exitCode !== 0) {
         this.logger.info(`[execServer] fs.mkdirp failed: ${path}: ${result.stderr.trim()}`);
@@ -545,11 +408,17 @@ export class SshExecServer {
 
     rm: async (path: string): Promise<void> => {
       this.logger.debug(`[execServer] fs.rm: ${path}`);
+      if (this.transportClient) {
+        return this.transportClient.rm(path);
+      }
       await this.conn.exec(`rm -rf ${shellQuote(path)}`);
     },
 
     rename: async (fromPath: string, toPath: string): Promise<void> => {
       this.logger.debug(`[execServer] fs.rename: ${fromPath} -> ${toPath}`);
+      if (this.transportClient) {
+        return this.transportClient.rename(fromPath, toPath);
+      }
       const result = await this.conn.exec(
         `mv ${shellQuote(fromPath)} ${shellQuote(toPath)}`,
       );
@@ -563,6 +432,9 @@ export class SshExecServer {
 
     readdir: async (path: string): Promise<DirectoryEntry[]> => {
       this.logger.debug(`[execServer] fs.readdir: ${path}`);
+      if (this.transportClient) {
+        return this.transportClient.readdir(path);
+      }
       const result = await this.conn.exec(`ls -A -F ${shellQuote(path)}`);
       if (result.exitCode !== 0) {
         this.logger.info(`[execServer] fs.readdir failed: ${path}: ${result.stderr.trim()}`);
@@ -591,16 +463,24 @@ export class SshExecServer {
       return entries;
     },
 
-    read: (path: string): Promise<ReadStream> => {
+    read: async (path: string): Promise<ReadStream> => {
       this.logger.debug(`[execServer] fs.read: ${path}`);
+      if (this.transportClient) {
+        const src = await this.transportClient.openGetFile(path);
+        return new TransportReadStream(src, src.onEnd);
+      }
       const child = this.conn.spawnProcess(`cat ${shellQuote(path)}`);
-      return Promise.resolve(new ProcReadStream(child, child.stdout));
+      return new ProcReadStream(child, child.stdout);
     },
 
-    write: (
+    write: async (
       path: string,
     ): Promise<{ stream: WriteStream; done: Promise<void> }> => {
       this.logger.debug(`[execServer] fs.write: ${path}`);
+      if (this.transportClient) {
+        const { writer, done } = await this.transportClient.openPutFile(path);
+        return { stream: writer, done };
+      }
       // Session path: buffer chunks and flush via putFile (control shell
       // stdin is shared, so spawnProcess + cat can't stream per-file stdin).
       if (this.conn.putFile) {

@@ -53,6 +53,10 @@ export interface InstallOptions {
   onDownloadProgress?: DownloadProgressFn;
   /** Called at each install phase (extracting, verifying, etc.). */
   onPhase?: (phase: string) => void;
+  /** Called after the probe + busybox bootstrap, before the tarball
+   *  upload. Lets the caller start the transport so the tarball rides it
+   *  instead of base64-over-shell. */
+  onProbed?: (info: { home: string; arch: string }) => Promise<void>;
 }
 
 /**
@@ -98,6 +102,11 @@ export async function ensureServerInstalled(
   // which needs ~/.ssh-remote/bin/sh. A host provisioned by another
   // extension (e.g. jeanp413.open-remote-ssh) can have the server already
   // installed but no busybox, breaking the rest of the resolve.
+  // Start the transport first (before busybox) so the busybox copy and the
+  // tarball both ride it instead of base64-over-shell.
+  await options?.onProbed?.({ home: probe.home, arch: probe.arch });
+
+  // --- 2. Bootstrap busybox if missing (single call) ---
   let bootstrapped = false;
   if (!probe.busyboxPresent) {
     logger.info(`[install] bootstrapping busybox...`);
@@ -126,6 +135,10 @@ export async function ensureServerInstalled(
   // --- 3b. Verify checksum (client-side, before extraction) ---
   if (productInfo.verifyChecksum) {
     options?.onPhase?.("verifying-checksum");
+    // Log a phase-entry line that matches the UI status text
+    // ("Verifying server checksum...") so log-watchers see the same
+    // transition the status bar shows.
+    logger.info("[install] verifying server checksum...");
     const result = await fetchExpectedChecksum(
       url,
       productInfo,
@@ -166,6 +179,12 @@ export async function ensureServerInstalled(
 
   // --- 4. mkdir + extract ---
   options?.onPhase?.("extracting");
+  // Log a phase-entry line that matches the UI status text
+  // ("Extracting server tarball...") so log-watchers see the same
+  // transition the status bar shows. Per-branch detail lines below
+  // describe which transport path is in use.
+  const tarMb = (tarball.length / 1_048_576).toFixed(1);
+  logger.info(`[install] extracting server tarball (${tarMb} MB)...`);
   // --strip-components=1 drops the top-level <server-app>-<os>-<arch>/ dir.
   // mkdir is folded in so we don't need a separate call.
   //
@@ -177,20 +196,54 @@ export async function ensureServerInstalled(
   //
   // Raw SSH path: execWithStdin streams the tarball over SSH stdin
   // directly (fast). No putFile available, so we use bbExecWithStdin.
-  const tarMb = (tarball.length / 1_048_576).toFixed(1);
-  if (conn.putFile) {
+  if (conn.extract) {
+    // Session path with a live Go transport: stream the tarball through
+    // the transport, which extracts it natively (archive/tar + compress/gzip
+    // in Go). No remote gzip/tar/busybox dependency, and upload + extract
+    // pipeline in a single op.
+    logger.info(`[install] streaming tarball (${tarMb} MB) to transport for extract to ${installPath}...`);
+    const exStart = Date.now();
+    let lastPct = -5;
+    const extractResult = await conn.extract(installPath, 1, tarball, (sent, total) => {
+      const pct = Math.floor((sent / total) * 100);
+      if (pct < lastPct + 5 && pct < 100) return;
+      lastPct = pct;
+      logger.info(
+        `[install] stream+extract ${pct}% (${(sent / 1_048_576).toFixed(1)}/${tarMb} MB)`,
+      );
+    });
+    logger.info(`[install] streamed+extracted in ${Date.now() - exStart}ms`);
+    if (extractResult.exitCode !== 0) {
+      throw new Error(
+        `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,
+      );
+    }
+  } else if (conn.putFile) {
     const tmpDir = `${probe.home}/.ssh-remote`;
     const tmpTarball = `${tmpDir}/server-${productInfo.commit}.tar.gz`;
     logger.info(
       `[install] uploading tarball (${tarMb} MB) to ${tmpTarball}...`,
     );
-    await conn.putFile(tmpTarball, tarball, "0600");
+    const upStart = Date.now();
+    let lastPct = -5;
+    await conn.putFile(tmpTarball, tarball, "0600", (sent, total) => {
+      const pct = Math.floor((sent / total) * 100);
+      // Report every 5%, plus the final 100%.
+      if (pct < lastPct + 5 && pct < 100) return;
+      lastPct = pct;
+      logger.info(
+        `[install] upload ${pct}% (${(sent / 1_048_576).toFixed(1)}/${tarMb} MB)`,
+      );
+    });
+    logger.info(`[install] tarball uploaded in ${Date.now() - upStart}ms`);
     logger.info(`[install] extracting to ${installPath}...`);
     const extractCmd =
       `mkdir -p ${shellQuote(installPath)} && ` +
       `gzip -dc ${shellQuote(tmpTarball)} | tar -xC ${shellQuote(installPath)} --strip-components=1 && ` +
       `rm -f ${shellQuote(tmpTarball)}`;
+    const exStart = Date.now();
     const extractResult = await bbExec(conn, probe.home, extractCmd);
+    logger.info(`[install] extracted in ${Date.now() - exStart}ms`);
     if (extractResult.exitCode !== 0) {
       throw new Error(
         `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,
@@ -201,7 +254,9 @@ export async function ensureServerInstalled(
     const extractCmd =
       `mkdir -p ${shellQuote(installPath)} && ` +
       `gzip -d | tar -xC ${shellQuote(installPath)} --strip-components=1`;
+    const exStart = Date.now();
     const extractResult = await bbExecWithStdin(conn, probe.home, extractCmd, tarball);
+    logger.info(`[install] extracted in ${Date.now() - exStart}ms`);
     if (extractResult.exitCode !== 0) {
       throw new Error(
         `Tarball extraction failed (exit ${extractResult.exitCode}): ${extractResult.stderr || extractResult.stdout}`,

@@ -29,6 +29,7 @@ export default tseslint.config(
       "research/**",
       "tmp/**",
       "tools/**",
+      "go/**",
     ],
   },
   js.configs.recommended,
@@ -52,7 +53,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**", "esbuild.config.mjs"],
+    files: ["scripts/**", "esbuild.config.mjs", "test/__mocks__/**"],
     languageOptions: { globals: nodeGlobals },
   },
   {

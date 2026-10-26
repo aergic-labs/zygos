@@ -22,6 +22,7 @@
 import * as http from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as path from "node:path/posix";
 import { spawn, type ChildProcess } from "node:child_process";
 import { shellQuote, timingSafeTokenCompare } from "../remote/shellQuote";
 import type {
@@ -30,9 +31,10 @@ import type {
   ExecResponse,
   PutFileRequest,
   StatusResponse,
+  SshSessionPersistenceRecord,
 } from "./sshSession/protocol";
+import { SSH_SESSION_PROTOCOL_VERSION } from "./sshSession/protocol";
 
-const SSH_SESSION_PROTOCOL_VERSION = 1;
 const READY_PREFIX = "AERGIC_SSH_SESSION_READY_";
 export const EXIT_PREFIX = "AERGIC_SSH_SESSION_";
 export const EXIT_SUFFIX = "_EXIT";
@@ -149,7 +151,7 @@ async function main(): Promise<void> {
   const readyNonce = crypto.randomBytes(8).toString("hex");
   const readyMarker = `${READY_PREFIX}${readyNonce}`;
   try {
-    await waitForReady(child, readyMarker);
+    await waitForReady(child, readyMarker, config.handshakeTimeoutMs ?? 30_000);
   } catch (err) {
     const elapsed = Date.now() - handshakeStart;
     log(`[ssh-session] ssh handshake failed ms=${elapsed}: ${err instanceof Error ? err.message : String(err)}`);
@@ -221,15 +223,19 @@ function readStdinLine(): Promise<string> {
 }
 
 /** Wait for the ready marker on ssh stdout, ignoring shell-init noise. */
-function waitForReady(child: ChildProcess, marker: string): Promise<void> {
-  const cmd = `printf '${marker}\\n'\n`;
+function waitForReady(
+  child: ChildProcess,
+  marker: string,
+  timeoutMs: number,
+): Promise<void> {
+  const cmd = `printf '${marker}\n'\n`;
   child.stdin?.write(cmd);
 
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       child.stdout?.removeListener("data", onData);
       reject(new Error("ready handshake timed out"));
-    }, 30_000);
+    }, timeoutMs);
 
     let buf = "";
     const onData = (chunk: Buffer) => {
@@ -253,7 +259,7 @@ function waitForReady(child: ChildProcess, marker: string): Promise<void> {
 /** Write the persistence file (no secrets). */
 export function writePersistenceFile(state: ServerState): void {
   if (!state.sshChild?.pid) return;
-  const record = {
+  const record: SshSessionPersistenceRecord = {
     pid: state.sshChild.pid,
     ipcHandlePath: state.config.ipcHandlePath,
     socksPort: state.socksPort,
@@ -448,10 +454,14 @@ export async function handlePutFile(
   // Build the remote command: echo the base64 content through a pipe so
   // base64 -d reads from the pipe, not the shell's shared stdin. The
   // exit marker printf runs as a separate command after base64 finishes.
+  // mkdir -p the parent so the `>` redirect can create the file even on
+  // a fresh install path whose dir doesn't exist yet (matches what the
+  // Go transport's doPut already does).
   const mode = body.mode ?? "0644";
   const exitMarker = `${EXIT_PREFIX}${body.id}${EXIT_SUFFIX}`;
+  const parentDir = path.dirname(body.path);
   const cmd =
-    `echo ${shellQuote(body.content)} | base64 -d > ${shellQuote(body.path)} && chmod ${mode} ${shellQuote(body.path)}\n` +
+    `mkdir -p ${shellQuote(parentDir)} && echo ${shellQuote(body.content)} | base64 -d > ${shellQuote(body.path)} && chmod ${mode} ${shellQuote(body.path)}\n` +
     `printf '\n${exitMarker}:%s\n' "$?"\n`;
 
   const result = await runShellCommand(state, exitMarker, cmd, undefined);

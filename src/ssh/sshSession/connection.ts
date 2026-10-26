@@ -17,14 +17,18 @@ import type { ISshConnection, ExecResult, SshConnectOptions } from "../connectio
 import { shellQuote } from "../../remote/shellQuote";
 import { SshSessionClient } from "./client";
 import { SshSessionProcess } from "./process";
-import type { SshTunnelClient } from "../../sshTunnel/client";
+import type { TransportClient } from "../../transport/client";
 
 export class SshSession implements ISshConnection {
   private client: SshSessionClient | undefined;
   private connected = false;
   private readonly label: string;
   private sessionSocksPort = 0;
-  private tunnelClient: SshTunnelClient | undefined;
+  private transportClient: TransportClient | undefined;
+
+  /** Floor for ready-handshake timeout when askpass is active, so password
+   *  entry isn't rushed. Mirrors SshConnection.ASKPASS_CONNECT_FLOOR_MS. */
+  private static readonly ASKPASS_CONNECT_FLOOR_MS = 120_000;
 
   constructor(
     private readonly options: SshConnectOptions,
@@ -70,6 +74,17 @@ export class SshSession implements ISshConnection {
 
     const { sshArgs, sshEnv } = this.buildSshConfig();
 
+    // Mirror SshConnection's askpass floor: when askpass is active, the
+    // ready handshake can pause on a host-authenticity or password prompt,
+    // so the timeout must accommodate human response time. Without this,
+    // a prompt that takes >30s times out the handshake underneath while the
+    // input box stays open. The user can also raise the floor via
+    // zygos.handshakeTimeout above 2min.
+    const base = this.options.handshakeTimeoutMs ?? 30_000;
+    const handshakeTimeoutMs = this.options.askpass
+      ? Math.max(base, SshSession.ASKPASS_CONNECT_FLOOR_MS)
+      : base;
+
     this.client = new SshSessionClient({
       destination: this.label,
       sshCommand: this.options.sshPath ?? "ssh",
@@ -79,6 +94,7 @@ export class SshSession implements ISshConnection {
       nodePath: this.sessionDeps.nodePath,
       dataDir: this.sessionDeps.dataDir,
       logger: this.sessionDeps.logger,
+      handshakeTimeoutMs,
     });
 
     await this.client.start();
@@ -132,6 +148,22 @@ export class SshSession implements ISshConnection {
 
   async exec(command: string, timeoutMs?: number, quiet = false): Promise<ExecResult> {
     this.requireConnected();
+    // Route through the Go transport when one is set and the caller didn't
+    // request a timeout. The transport's exec runs `sh -c <command>` on the
+    // remote, so shell semantics (pipes, redirects, && chains) are preserved.
+    // Callers that pass a timeout (the health monitor's ssh-alive ping) want
+    // to probe the control shell itself, not the transport; leave those on
+    // the ssh-session local server path. Default non-session path never has
+    // a transport set, so this branch is session-only.
+    if (this.transportClient && !timeoutMs) {
+      const r = await this.transportClient.exec("sh", ["-c", command]);
+      return {
+        stdout: r.stdout.toString("utf-8"),
+        stderr: r.stderr.toString("utf-8"),
+        exitCode: r.exitCode,
+        signal: r.signal,
+      };
+    }
     const response = await this.client!.exec(command, timeoutMs, quiet);
     return {
       stdout: response.stdout,
@@ -141,37 +173,83 @@ export class SshSession implements ISshConnection {
     };
   }
 
-  /** Inject the SshTunnel client. When set, putFile and execWithStdin
-   *  route through the tunnel (binary HTTP-over-SOCKS5) instead of
-   *  the base64 control-shell hack. */
-  setTunnelClient(client: SshTunnelClient | undefined): void {
-    this.tunnelClient = client;
+  /** Inject the Go transport client. When set, exec, putFile, and
+   *  execWithStdin route through the transport instead of the ssh-session
+   *  control shell. */
+  setTransportClient(client: TransportClient | undefined): void {
+    this.transportClient = client;
   }
 
   async execWithStdin(command: string, stdinData: Buffer): Promise<ExecResult> {
     this.requireConnected();
-    if (this.tunnelClient) {
-      const resp = await this.tunnelClient.execWithStdin(command, stdinData);
+    if (this.transportClient) {
+      const r = await this.transportClient.execWithStdin(command, stdinData);
       return {
-        stdout: Buffer.from(resp.stdout, "base64").toString("utf-8"),
-        stderr: Buffer.from(resp.stderr, "base64").toString("utf-8"),
-        exitCode: resp.exitCode,
-        signal: resp.signal ?? null,
+        stdout: r.stdout.toString("utf-8"),
+        stderr: r.stderr.toString("utf-8"),
+        exitCode: r.exitCode,
+        signal: r.signal,
       };
     }
-    // No tunnel: base64 heredoc via the control shell.
+    // No transport: base64 heredoc via the control shell.
     const b64 = stdinData.toString("base64");
     const wrapped = `echo ${shellQuote(b64)} | base64 -d | ${command}`;
     return this.exec(wrapped);
   }
 
-  async putFile(remotePath: string, content: Buffer, mode?: string): Promise<ExecResult> {
+  async putFile(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<ExecResult> {
     this.requireConnected();
-    if (this.tunnelClient) {
-      await this.tunnelClient.putFile(remotePath, content, mode);
+    if (this.transportClient) {
+      await this.transportClient.putFile(remotePath, content, mode, onProgress);
       return { stdout: "", stderr: "", exitCode: 0, signal: null };
     }
     return this.client!.putFile(remotePath, content, mode);
+  }
+
+  /** Stream a gzip tarball to the remote and extract it. Uses the Go
+   *  transport when set (no remote gzip/tar/busybox needed); falls back to
+   *  putFile + exec `gzip -dc | tar -xC` for the session-without-transport
+   *  case (e.g. transport failed to start). */
+  async extract(
+    dest: string,
+    stripComponents: number,
+    content: Buffer,
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<ExecResult> {
+    this.requireConnected();
+    if (this.transportClient) {
+      try {
+        await this.transportClient.extract(dest, stripComponents, content, onProgress);
+        return { stdout: "", stderr: "", exitCode: 0, signal: null };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { stdout: "", stderr: msg, exitCode: 1, signal: null };
+      }
+    }
+    // Fallback: upload to a tmp file, then exec gzip|tar.
+    const tmp = `${dest}.tar.gz`;
+    const putResult = await this.putFile(tmp, content, "0600", onProgress);
+    if (putResult.exitCode !== 0) {
+      void this.exec(`rm -f ${tmp}`).catch(() => {});
+      return {
+        stdout: putResult.stdout,
+        stderr: putResult.stderr || putResult.stdout,
+        exitCode: putResult.exitCode,
+        signal: putResult.signal,
+      };
+    }
+    const cmd =
+      `gzip -dc ${tmp} | tar -xC ${dest} --strip-components=${stripComponents} && rm -f ${tmp}`;
+    const result = await this.exec(cmd);
+    if (result.exitCode !== 0) {
+      void this.exec(`rm -f ${tmp}`).catch(() => {});
+    }
+    return result;
   }
 
   spawnProcess(command: string | undefined, _extraArgs: string[] = []): ChildProcess {
@@ -186,10 +264,6 @@ export class SshSession implements ISshConnection {
   }
 
   async close(): Promise<void> {
-    if (this.tunnelClient) {
-      this.tunnelClient.dispose();
-      this.tunnelClient = undefined;
-    }
     if (this.client) {
       await this.client.stop();
       this.client = undefined;

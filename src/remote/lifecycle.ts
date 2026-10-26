@@ -21,6 +21,7 @@
 import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import { bbExec, shellQuote } from "./busybox";
+import type { ZygosTransport } from "../transport/zygos";
 
 /** Stale-lock age threshold (seconds). A resolve lock older than this is
  * considered abandoned and reclaimed. */
@@ -135,10 +136,32 @@ export async function finalizeServerStart(
   installPath: string,
   port: number,
   opts: { releaseLock: boolean },
+  transport?: ZygosTransport,
 ): Promise<FinalizeResult> {
   const pidFile = `${installPath}/.server.pid`;
   const portFile = `${installPath}/.server.port`;
   const lockDir = `${installPath}/.resolve-lock`;
+
+  if (transport) {
+    const { pid } = await transport.serverFinalize(
+      installPath,
+      port,
+      opts.releaseLock,
+    );
+    if (pid) {
+      return {
+        pid,
+        log: opts.releaseLock
+          ? `wrote PID=${pid} port=${port}, released resolve lock`
+          : `wrote PID=${pid} port=${port}`,
+      };
+    }
+    return {
+      log: opts.releaseLock
+        ? "no remote server PID found, released resolve lock"
+        : "no remote server PID found",
+    };
+  }
 
   const lines: string[] = [
     `pid=$(pgrep -f -o ${shellQuote(`${installPath}/out/server-main.js`)} 2>/dev/null)`,
@@ -193,11 +216,49 @@ export async function acquireLockAndProbeZombie(
   conn: ISshConnection,
   home: string,
   installPath: string,
+  transport?: ZygosTransport,
 ): Promise<LockProbeResult> {
   const pidFile = `${installPath}/.server.pid`;
   const portFile = `${installPath}/.server.port`;
   const lockDir = `${installPath}/.resolve-lock`;
   const staleMin = Math.floor(LOCK_STALE_AGE_SEC / 60);
+
+  if (transport) {
+    const { acquired } = await transport.lock(lockDir, LOCK_STALE_AGE_SEC);
+    if (!acquired) {
+      return {
+        locked: false,
+        log: "could not acquire resolve lock - another resolve may be running",
+      };
+    }
+    const status = await transport.serverStatus(installPath);
+    if (status.reusePort) {
+      return {
+        locked: true,
+        reusePort: status.reusePort,
+        log: `acquired resolve lock, server alive on port ${status.reusePort}, reusing`,
+      };
+    }
+    if (!status.pid) {
+      return { locked: true, log: "acquired resolve lock, no existing PID file" };
+    }
+    if (!status.alive) {
+      await transport.serverCleanup(installPath);
+      return {
+        locked: true,
+        log: `acquired resolve lock, PID ${status.pid} is dead, cleaned up files`,
+      };
+    }
+    const cleanup = await transport.serverCleanup(installPath);
+    const strayMsg =
+      cleanup.strays.length > 0
+        ? `, killed strays ${cleanup.strays.join(", ")}`
+        : "";
+    return {
+      locked: true,
+      log: `acquired resolve lock, killed zombie PID ${cleanup.killedPid}${strayMsg}, cleanup complete`,
+    };
+  }
 
   // One script: acquire lock, then probe zombie. Outputs one line:
   //   LOCKFAIL                - could not acquire lock
@@ -306,9 +367,16 @@ export async function removeServerMetadata(
   home: string,
   installPath: string,
   logger: Logger,
+  transport?: ZygosTransport,
 ): Promise<void> {
   const pidFile = `${installPath}/.server.pid`;
   const portFile = `${installPath}/.server.port`;
+  if (transport) {
+    await transport.rm(pidFile);
+    await transport.rm(portFile);
+    logger.info("[lifecycle] removed PID/port files");
+    return;
+  }
   await bbExec(
     conn,
     home,
@@ -382,8 +450,14 @@ export async function releaseResolveLock(
   home: string,
   installPath: string,
   logger: Logger,
+  transport?: ZygosTransport,
 ): Promise<void> {
   const lockDir = `${installPath}/.resolve-lock`;
+  if (transport) {
+    await transport.unlock(lockDir);
+    logger.info("[lifecycle] released resolve lock");
+    return;
+  }
   await bbExec(conn, home, `rm -rf ${shellQuote(lockDir)}`);
   logger.info("[lifecycle] released resolve lock");
 }
@@ -404,8 +478,8 @@ export async function probeServerPid(
 ): Promise<number | undefined> {
   // A bare install-path match also matches the busybox `sh` wrappers that
   // launched the server (`sh -c '... .../bin/<server> --start-server ...'`),
-  // and `<installPath>/node` also matches the sshTunnel / extensionHost /
-  // fileWatcher node processes. Neither is unique to the server. The server's
+  // and `<installPath>/node` also matches the extensionHost / fileWatcher
+  // node processes. Neither is unique to the server. The server's
   // node binary is launched with `out/server-main.js` as its script, which no
   // other process under the install path uses, so match that specifically.
   // Fall back to `<installPath>/node` for launchers that don't exec the

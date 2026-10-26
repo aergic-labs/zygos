@@ -29,6 +29,10 @@ export interface SshSessionServerConfig {
   shutdownTimeoutMs: number;
   /** Keepalive ping interval in ms. */
   keepaliveIntervalMs: number;
+  /** Max wait (ms) for the ssh ready handshake. When askpass is active
+   *  the caller should floor this to 2min so password entry isn't rushed.
+   *  Defaults to 30s for backwards compatibility with older clients. */
+  handshakeTimeoutMs?: number;
 }
 
 /** Persistent data file. No secrets. Keyed by destination. */

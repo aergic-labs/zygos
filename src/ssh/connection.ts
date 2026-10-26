@@ -65,13 +65,28 @@ export interface ISshConnection {
   readonly remoteLabel: string;
   /** Write a file to the remote. Optional; session connections implement this
  * instead of using spawnProcess + stdin for binary writes. */
-  putFile?(remotePath: string, content: Buffer, mode?: string): Promise<ExecResult>;
+  putFile?(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<ExecResult>;
+  /** Stream a gzip-compressed tarball to the remote and extract it to `dest`
+ *  with `--strip-components=strip`. Optional; session connections with a
+ *  live Go transport implement this natively (no remote gzip/tar/busybox
+ *  needed). Falls back to putFile + exec gzip|tar when no transport. */
+  extract?(
+    dest: string,
+    stripComponents: number,
+    content: Buffer,
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<ExecResult>;
   /** Actual SOCKS port (session only). Read after connect(). */
   getSocksPort?(): number;
-  /** Inject the SshTunnel client (session only). When set, putFile and
- *  execWithStdin route through the tunnel (binary) instead of the
- *  base64 control-shell hack. */
-  setTunnelClient?(client: unknown): void;
+  /** Inject the Go transport client (session only). When set, exec,
+   *  putFile, and execWithStdin route through the transport instead of the
+   *  ssh-session control shell. */
+  setTransportClient?(client: unknown): void;
 }
 
 /**

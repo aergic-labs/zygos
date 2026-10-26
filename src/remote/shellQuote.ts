@@ -4,12 +4,11 @@
  */
 
 /**
- * Shell-quoting and token-comparison helpers shared by the extension,
- * the standalone local-server bundle, and the ssh-tunnel bundle.
+ * Shell-quoting and token-comparison helpers shared by the extension
+ * and the standalone local-server bundle.
  *
  * This module imports only node builtins so it can be bundled into
- * dist/localServer.js and dist/sshTunnel.js without pulling in a vscode
- * dependency.
+ * dist/localServer.js without pulling in a vscode dependency.
  */
 
 import * as crypto from "node:crypto";

@@ -364,6 +364,9 @@ describe("ssh session server: /put-file handler", () => {
     // Verify the stdin write pipes the base64 content through echo, not
     // as a bare stdin line fed to base64 -d.
     expect(child.stdinWrites[0]).toContain(`echo '${content}' | base64 -d`);
+    // Verify the parent dir is mkdir'd before the redirect, so putFile
+    // works on a fresh install path whose dir doesn't exist yet.
+    expect(child.stdinWrites[0]).toContain(`mkdir -p '/tmp'`);
   });
 
   it("rejects missing fields", async () => {

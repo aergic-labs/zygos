@@ -122,7 +122,6 @@ describe("SshSessionClient", () => {
       sshSessionProtocolVersion: 1,
     }));
 
-    let attached = false;
     const client = new SshSessionClient({
       destination: "test@host",
       sshCommand: "ssh",

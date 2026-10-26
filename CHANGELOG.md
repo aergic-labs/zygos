@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0]
+
+### Fixed
+
+- `apex → remote-ssh` heals after laptop sleep without a reload dialog. Both fast-paths probe the shared ssh session before reuse, mark it dead on failure, fall through to a fresh transport, and throw an `ECONNREFUSED`-shaped dead-guard error so vscode re-resolves.
+- `apex → remote-ssh → devcontainer` heals the same way; the session fast-path probe above closes the `resolve()` gap the 0.5.1 `acquireTransport` probe left.
+- SOCKS5 connect errors propagate their native `code`/`syscall` (`ECONNREFUSED` + `connect`) so vscode classifies them as retryable.
+- `npm audit` advisories cleared.
+- `"No view is registered with id: zygos.hosts"` toast in `apex → ssh → devcontainer` windows; `createTreeView("zygos.hosts")` is now gated on `remoteName` (the view is contributed `ssh-remote`-only).
+
+### Changed
+
+- Experimental persistent SSH connection (`zygos.usePersistentConnection`) uses a Go transport instead of Node.js. One ssh connection, one SOCKS5 forward, one Go transport per authority, refcounted across `resolve()` and `resolveExecServer()`; reload reuses a running transport instead of orphaning it.
+- Session-path remote execs ride the Go transport (`transport.exec`) instead of the ssh-session control shell, skipping it for bookkeeping round-trips (resolve lock, PID/port metadata, conn-token, nohup wrapper, ready-file poll, error-log tail). The health-monitor ssh-alive ping keeps the control shell.
+- Server tarball upload progress (`[install] upload N%`) reports every 5% instead of 1%, matching download.
+- Go transport writes one atomic `tunnel-meta.json` (port/pid/token) instead of three files; the reuse probe and dead-pid reap read it in one `cat` round-trip.
+- REH ready-file wait uses a `waitForFile` transport op (one blocking call) instead of the 1s `cat` poll loop. Default path keeps the poll.
+- Session-path `startTransport` drops the separate `~/.ssh-remote` `mkdir -p`; the first `putFile` creates the parent inside the Go `doPut` op.
+- Go transport self-generates its bearer token from `crypto/rand` instead of a `--token-file`; the token ships in `tunnel-meta.json`, dropping one `putFile` round-trip and the pre-listener window.
+- `killSharedTransport` reaps the pid from `tunnel-meta.json` and removes `tunnel-meta.json` + `tunnel.log` (the old `tunnel-pid`/`token`/`port` files the Go binary no longer writes); the stale-pid kill was a no-op since the meta-file consolidation.
+
 ## [0.5.1]
 
 ### Fixed

@@ -256,12 +256,11 @@ describe("SshSession.spawnProcess", () => {
   });
 });
 
-describe("SshSession tunnel routing", () => {
-  function makeMockTunnelClient() {
+describe("SshSession transport routing", () => {
+  function makeMockTransportClient() {
     return {
       putFileCalls: [] as { path: string; content: Buffer; mode?: string }[],
       execCalls: [] as { command: string; stdin: Buffer }[],
-      disposed: false,
       putFile(path: string, content: Buffer, mode?: string) {
         this.putFileCalls.push({ path, content, mode });
         return Promise.resolve();
@@ -269,57 +268,48 @@ describe("SshSession tunnel routing", () => {
       execWithStdin(command: string, stdin: Buffer) {
         this.execCalls.push({ command, stdin });
         return Promise.resolve({
-          stdout: Buffer.from("tunnel-stdout").toString("base64"),
-          stderr: "",
+          stdout: Buffer.from("transport-stdout"),
+          stderr: Buffer.from(""),
           exitCode: 0,
+          signal: null,
         });
       },
-      dispose() { this.disposed = true; },
     };
   }
 
-  it("putFile routes through the tunnel when set", async () => {
+  it("putFile routes through the transport when set", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!;
-    const tunnel = makeMockTunnelClient();
-    conn.setTunnelClient(tunnel as any);
+    const transport = makeMockTransportClient();
+    conn.setTransportClient(transport as any);
     const content = Buffer.from("binary data");
     await conn.putFile("/remote/path", content, "0644");
-    expect(tunnel.putFileCalls.length).toBe(1);
-    expect(tunnel.putFileCalls[0].path).toBe("/remote/path");
-    expect(tunnel.putFileCalls[0].content).toEqual(content);
-    expect(tunnel.putFileCalls[0].mode).toBe("0644");
+    expect(transport.putFileCalls.length).toBe(1);
+    expect(transport.putFileCalls[0].path).toBe("/remote/path");
+    expect(transport.putFileCalls[0].content).toEqual(content);
+    expect(transport.putFileCalls[0].mode).toBe("0644");
     expect(client.putFileCalls.length).toBe(0);
     await conn.close();
   });
 
-  it("execWithStdin routes through the tunnel when set", async () => {
+  it("execWithStdin routes through the transport when set", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!;
-    const tunnel = makeMockTunnelClient();
-    conn.setTunnelClient(tunnel as any);
+    const transport = makeMockTransportClient();
+    conn.setTransportClient(transport as any);
     const stdin = Buffer.from("piped");
     const result = await conn.execWithStdin("cat", stdin);
-    expect(tunnel.execCalls.length).toBe(1);
-    expect(tunnel.execCalls[0].command).toBe("cat");
-    expect(tunnel.execCalls[0].stdin).toEqual(stdin);
+    expect(transport.execCalls.length).toBe(1);
+    expect(transport.execCalls[0].command).toBe("cat");
+    expect(transport.execCalls[0].stdin).toEqual(stdin);
     expect(client.execCalls.length).toBe(0);
     expect(result.exitCode).toBe(0);
     await conn.close();
   });
 
-  it("close disposes the tunnel client", async () => {
-    const conn = new SshSession(makeOptions(), sshSessionDeps);
-    await conn.connect();
-    const tunnel = makeMockTunnelClient();
-    conn.setTunnelClient(tunnel as any);
-    await conn.close();
-    expect(tunnel.disposed).toBe(true);
-  });
-
-  it("putFile falls back to session client when no tunnel", async () => {
+  it("putFile falls back to session client when no transport", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!;
@@ -328,7 +318,7 @@ describe("SshSession tunnel routing", () => {
     await conn.close();
   });
 
-  it("execWithStdin falls back to base64 heredoc when no tunnel", async () => {
+  it("execWithStdin falls back to base64 heredoc when no transport", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!;

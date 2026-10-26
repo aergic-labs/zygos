@@ -160,6 +160,10 @@ export class ConnectionMonitor {
     await this.triggerProbe("sleep");
   }
 
+  /** Diagnostic: was the last probe an onSleep, wake, or periodic tick? */
+  private lastProbeReason = "";
+  private probeSeq = 0;
+
   private schedulePeriodic(): void {
     const tick = async (): Promise<void> => {
       if (this.stopped || this.conn.dead) return;
@@ -201,6 +205,7 @@ export class ConnectionMonitor {
     }
 
     this.lastProbeAt = now;
+    this.lastProbeReason = _reason;
     this.inFlight = this.probeAndRepair().finally(() => {
       this.inFlight = undefined;
     });
@@ -213,7 +218,12 @@ export class ConnectionMonitor {
     // Session connections: the forward lives inside the ssh child. No
     // in-place repair possible. Probe ssh; dead = full reconnect.
     if (this.conn.isSession) {
-      if (await this.sshAlive()) {
+      const seq = ++this.probeSeq;
+      const alive = await this.sshAlive();
+      this.logger.info(
+        `[health] session probe #${seq} (${this.lastProbeReason}) -> ${alive ? "alive" : "dead"}`,
+      );
+      if (alive) {
         this.reportStatus("Connected");
       } else {
         this.logger.info("[health] ssh session unreachable, marking dead");
@@ -328,9 +338,17 @@ export class ConnectionMonitor {
 
   private async sshAlive(): Promise<boolean> {
     try {
+      const t0 = Date.now();
       const result = await this.conn.conn.exec("true", 10_000);
+      const ms = Date.now() - t0;
+      this.logger.info(
+        `[health] sshAlive probe exitCode=${result.exitCode} ms=${ms}`,
+      );
       return result.exitCode === 0;
-    } catch {
+    } catch (err) {
+      this.logger.info(
+        `[health] sshAlive probe threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
