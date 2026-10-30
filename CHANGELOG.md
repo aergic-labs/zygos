@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1]
+
+### Fixed
+
+- Bumped `qs` to 6.17.1 (transitive via `@vscode/vsce`, build-only) to clear a moderate DoS advisory.
+
 ## [0.6.0]
 
 ### Fixed
