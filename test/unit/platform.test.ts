@@ -11,6 +11,7 @@ import * as os from "node:os";
 import { KiroAdapter } from "../../src/platform/kiro";
 import { VscodiumAdapter } from "../../src/platform/vscodium";
 import { getProductInfo, readProductJson } from "../../src/platform/index";
+import { buildServerDownloadUrl } from "../../src/remote/url";
 import { initVscodiumFeed } from "../../src/remote/vscodiumFeed";
 import { setConfig, resetConfig, env as vscodeEnv } from "../__mocks__/vscode";
 
@@ -78,8 +79,8 @@ describe("KiroAdapter", () => {
     expect(adapter.serverApplicationName).toBe("kiro-server");
   });
 
-  it("getServerDownloadUrl builds the expected URL", () => {
-    const url = adapter.getServerDownloadUrl(
+  it("getServerDownloadUrl builds the expected URL", async () => {
+    const { url } = await adapter.getServerDownloadUrl(
       "abc123",
       "stable",
       "linux",
@@ -173,9 +174,9 @@ describe("VscodiumAdapter", () => {
     expect(adapter.serverApplicationName).toBe("codium-server");
   });
 
-  it("getServerDownloadUrl uses version from product.json", () => {
+  it("getServerDownloadUrl uses version from product.json", async () => {
     writeProductJson({ version: "1.92.2" });
-    const url = adapter.getServerDownloadUrl(
+    const { url } = await adapter.getServerDownloadUrl(
       "commit",
       "stable",
       "linux",
@@ -186,9 +187,9 @@ describe("VscodiumAdapter", () => {
     );
   });
 
-  it("getServerDownloadUrl falls back to 0.0.0 when no version", () => {
+  it("getServerDownloadUrl falls back to 0.0.0 when no version", async () => {
     writeProductJson({});
-    const url = adapter.getServerDownloadUrl("c", "q", "linux", "arm64");
+    const { url } = await adapter.getServerDownloadUrl("c", "q", "linux", "arm64");
     expect(url).toContain("0.0.0");
     expect(url).toContain("arm64");
   });
@@ -234,7 +235,7 @@ describe("VscodiumAdapter", () => {
     expect(new VscodiumAdapter().isValidRuntime()).toBe(true);
   });
 
-  it("qoder auto-path uses productVersion", () => {
+  it("qoder auto-path uses productVersion", async () => {
     writeProductJson({
       applicationName: "qoder",
       version: "1.106.3",
@@ -242,13 +243,13 @@ describe("VscodiumAdapter", () => {
       commit: "deadbeef",
     });
     const a = new VscodiumAdapter();
-    const url = a.getServerDownloadUrl("deadbeef", "stable", "linux", "x64");
+    const { url } = await a.getServerDownloadUrl("deadbeef", "stable", "linux", "x64");
     expect(url).toBe(
       "https://download.qoder.com/server/1.12.0/deadbeef/qoder-reh-linux-x64-1.12.0.tar.gz",
     );
   });
 
-  it("devin auto-path uses windsurfVersion", () => {
+  it("devin auto-path uses windsurfVersion", async () => {
     writeProductJson({
       applicationName: "devin-desktop",
       version: "1.110.1",
@@ -256,13 +257,13 @@ describe("VscodiumAdapter", () => {
       commit: "cafef00d",
     });
     const a = new VscodiumAdapter();
-    const url = a.getServerDownloadUrl("cafef00d", "stable", "linux", "arm64");
+    const { url } = await a.getServerDownloadUrl("cafef00d", "stable", "linux", "arm64");
     expect(url).toBe(
       "https://windsurf-stable.codeiumdata.com/linux-reh-arm64/stable/cafef00d/devin-reh-linux-arm64-3.3.18.tar.gz",
     );
   });
 
-  it("antigravity auto-path uses ideVersion and the google CDN", () => {
+  it("antigravity auto-path uses ideVersion and the google CDN", async () => {
     writeProductJson({
       applicationName: "antigravity-ide",
       version: "1.107.0",
@@ -270,7 +271,7 @@ describe("VscodiumAdapter", () => {
       commit: "abc123",
     });
     const a = new VscodiumAdapter();
-    const url = a.getServerDownloadUrl("abc123", "stable", "linux", "x64");
+    const { url } = await a.getServerDownloadUrl("abc123", "stable", "linux", "x64");
     expect(url).toBe(
       "https://dl.google.com/edgedl/release2/j0qc3/antigravity/stable/2.1.1-abc123/linux-x64/Antigravity%20IDE-reh.tar.gz",
     );
@@ -305,7 +306,7 @@ describe("VscodiumAdapter", () => {
       });
     try {
       const a = new VscodiumAdapter();
-      const url = await a.getServerDownloadUrl(
+      const { url } = await a.getServerDownloadUrl(
         "c0ffee",
         "stable",
         "linux",
@@ -317,6 +318,21 @@ describe("VscodiumAdapter", () => {
     } finally {
       fetchMock.mockRestore();
     }
+  });
+
+  it("bob auto-path falls through to vscodium default URL", async () => {
+    writeProductJson({
+      applicationName: "bobide",
+      version: "1.126.0+bob2.3.0",
+      commit: "b48bf62595b330a56b628a82441207f506fbc6a4",
+    });
+    const a = new VscodiumAdapter();
+    expect(a.name).toBe("Bob");
+    expect(a.dataFolderName).toBe(".bobide");
+    expect(a.serverApplicationName).toBe("bobide-server");
+    const result = await a.getServerDownloadUrl("b48bf62", "stable", "linux", "x64");
+    expect(result.type).toBe("fallback");
+    expect(typeof result.url).toBe("string");
   });
 });
 
@@ -345,15 +361,15 @@ describe("VscodiumAdapter (vscode-oss)", () => {
     resetConfig();
   });
 
-  it("detects code-oss as VSCode-OSS (not VSCodium)", () => {
+  it("detects code-oss as Code-OSS (not VSCodium)", () => {
     writeProductJson({ applicationName: "code-oss", version: "1.124.0" });
     const a = new VscodiumAdapter();
-    expect(a.name).toBe("VSCode-OSS");
+    expect(a.name).toBe("Code-OSS");
     expect(a.serverDataFolderName).toBe(".vscode-server-oss");
     expect(a.serverApplicationName).toBe("code-server-oss");
   });
 
-  it("real vscodium (applicationName=codium) is not VSCode-OSS", () => {
+  it("real vscodium (applicationName=codium) is not Code-OSS", () => {
     writeProductJson({ applicationName: "codium", version: "1.126.04524" });
     const a = new VscodiumAdapter();
     expect(a.name).toBe("VSCodium");
@@ -367,7 +383,7 @@ describe("VscodiumAdapter (vscode-oss)", () => {
     });
     feedMock.mockResolvedValue("1.121.03429");
     const a = new VscodiumAdapter();
-    const url = await a.getServerDownloadUrl(
+    const { url } = await a.getServerDownloadUrl(
       "feedface",
       "stable",
       "linux",
@@ -386,7 +402,7 @@ describe("VscodiumAdapter (vscode-oss)", () => {
     });
     feedMock.mockResolvedValue("");
     const a = new VscodiumAdapter();
-    const url = await a.getServerDownloadUrl(
+    const { url } = await a.getServerDownloadUrl(
       "feedface",
       "stable",
       "linux",
@@ -497,6 +513,38 @@ describe("getProductInfo", () => {
     });
     const info = getProductInfo(new VscodiumAdapter());
     expect(info.serverDownloadUrlTemplate).toBeUndefined();
+  });
+
+  it("bob auto-path uses the product.json template, not the vscodium fallback", async () => {
+    writeProductJson({
+      applicationName: "bobide",
+      commit: "b48bf62",
+      version: "1.126.0+bob2.3.0",
+      serverDownloadUrlTemplate:
+        "https://api.us-east.bob.ibm.com/update/reh/ibm-bob/${os}/${arch}/${version}",
+    });
+    const adapter = new VscodiumAdapter();
+    const info = getProductInfo(adapter);
+    const result = await buildServerDownloadUrl(info, adapter, "linux", "x64");
+    expect(result.type).toBe("custom");
+    expect(result.url).toBe(
+      "https://api.us-east.bob.ibm.com/update/reh/ibm-bob/linux/x64/1.126.0+bob2.3.0",
+    );
+  });
+
+  it("reads serverDownloadUrlTemplate from product.json.remote.SSH when top-level is missing", () => {
+    writeProductJson({
+      commit: "abc",
+      remote: {
+        SSH: {
+          serverDownloadUrlTemplate: "https://ssh.example/${commit}/${arch}",
+        },
+      },
+    });
+    const info = getProductInfo(new VscodiumAdapter());
+    expect(info.serverDownloadUrlTemplate).toBe(
+      "https://ssh.example/${commit}/${arch}",
+    );
   });
 
   it("release falls back to commit when version is empty", () => {

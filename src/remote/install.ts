@@ -24,7 +24,7 @@
 import type { ISshConnection } from "../ssh/connection";
 import type { Logger } from "../common/logger";
 import type { PlatformAdapter, ProductInfo } from "../platform/types";
-import { buildServerDownloadUrl } from "./url";
+import { buildServerDownloadUrl, downloadUrlLogMessage } from "./url";
 import { downloadToBuffer, type DownloadProgressFn } from "./download";
 import { fetchExpectedChecksum, verifyHash, computeHash } from "./checksum";
 import {
@@ -127,7 +127,8 @@ export async function ensureServerInstalled(
   }
 
   // --- 3. Download tarball (client-side) ---
-  const url = await buildServerDownloadUrl(productInfo, adapter, os, probe.arch);
+  const { url, type } = await buildServerDownloadUrl(productInfo, adapter, os, probe.arch);
+  logger.info(downloadUrlLogMessage(adapter, type));
   logger.info(`[install] downloading server from ${url}...`);
   const tarball = await downloadToBuffer(url, options?.onDownloadProgress);
   logger.info(`[install] downloaded ${tarball.length} bytes`);

@@ -6,7 +6,7 @@
 import * as vscode from "vscode";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import { buildServerDownloadUrl, resolveTemplateUrl } from "../remote/url";
+import { buildServerDownloadUrl, resolveTemplateUrl, downloadUrlLogMessage } from "../remote/url";
 import { resolveNearestVsCodiumVersion } from "../remote/vscodiumFeed";
 import type {
   DownloadTemplateInfo,
@@ -239,7 +239,9 @@ async function sendState(
 
   let resolvedUrl: string | undefined;
   try {
-    resolvedUrl = await buildServerDownloadUrl(info, platform, os, arch);
+    const result = await buildServerDownloadUrl(info, platform, os, arch);
+    deps.logger.info(downloadUrlLogMessage(platform, result.type));
+    resolvedUrl = result.url;
     deps.logger.info(`[configPanel] sendState resolvedUrl=${resolvedUrl}`);
   } catch (err) {
     deps.logger.error(`[configPanel] sendState failed to resolve URL: ${err}`);
@@ -277,8 +279,9 @@ async function handleResolveUrl(
     // Auto mode: resolve via the adapter.
     try {
       const { adapter: platform, info } = await deps.getDownloadInfo();
-      const url = await buildServerDownloadUrl(info, platform, os, arch);
-      await panel.webview.postMessage({ type: "resolvedUrl", url });
+      const result = await buildServerDownloadUrl(info, platform, os, arch);
+      deps.logger.info(downloadUrlLogMessage(platform, result.type));
+      await panel.webview.postMessage({ type: "resolvedUrl", url: result.url });
     } catch (err) {
       await panel.webview.postMessage({
         type: "resolvedUrl",

@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 import type { PlatformAdapter } from "./types";
 import { readProductJson } from "./index";
 import { resolveNearestVsCodiumVersion } from "../remote/vscodiumFeed";
+import type { DownloadUrlResult } from "./downloadTypes";
 
 const VSCODIUM_GITHUB_BASE =
   "https://github.com/VSCodium/vscodium/releases/download";
@@ -82,12 +83,22 @@ const QODER_CONFIG: ForkConfig = {
   needsArgvPatch: true,
 };
 
+const BOB_CONFIG: ForkConfig = {
+  name: "Bob",
+  dataFolderName: ".bobide",
+  serverDataFolderName: ".bobide-server",
+  serverApplicationName: "bobide-server",
+  argvDataFolderNames: [".bobide"],
+  remoteExtensionsDirs: [".bobide-server/extensions"],
+  needsArgvPatch: true,
+};
+
 // vscode-oss (microsoft/vscode OSS build) ships no reh tarballs. Use
 // VSCodium's reh tarballs at the highest release <= the local version.
 // Commit patching after extraction aligns the tarball's product.json with
 // the IDE's commit so the client/server commit check passes.
 const VSCODE_OSS_CONFIG: ForkConfig = {
-  name: "VSCode-OSS",
+  name: "Code-OSS",
   dataFolderName: ".vscode-oss",
   serverDataFolderName: ".vscode-server-oss",
   serverApplicationName: "code-server-oss",
@@ -108,6 +119,7 @@ function detectFork(): ForkConfig {
       return DEVIN_CONFIG;
     if (name.includes("antigravity")) return ANTIGRAVITY_CONFIG;
     if (name.includes("qoder")) return QODER_CONFIG;
+    if (name.includes("bob")) return BOB_CONFIG;
   } catch {
     // fall through to vscodium default
   }
@@ -191,8 +203,8 @@ async function fetchTraeVersion(
  * applicationName at construction time and selects the appropriate fork
  * config (data folders, argv patching, server names, download URL logic).
  *
- * Supported: VSCodium, code-oss, VSCodium-OSS, Trae, Devin,
- * Antigravity, Qoder. The `zygos.serverDownload` object setting overrides
+ * Supported: VSCodium, code-oss, Trae, Devin,
+ * Antigravity, Qoder, Bob. The `zygos.serverDownload` object setting overrides
  * automatic detection when mode="custom" (handled in getProductInfo).
  */
 export class VscodiumAdapter implements PlatformAdapter {
@@ -202,25 +214,27 @@ export class VscodiumAdapter implements PlatformAdapter {
   readonly serverDataFolderName = this.fork.serverDataFolderName;
   readonly serverApplicationName = this.fork.serverApplicationName;
 
-  getServerDownloadUrl(
+  async getServerDownloadUrl(
     commit: string,
     quality: string,
     os: string,
     arch: string,
-  ): string | Promise<string> {
+  ): Promise<DownloadUrlResult> {
     switch (this.fork) {
       case TRAE_CONFIG:
-        return this.traeDownloadUrl(commit, arch);
+        return { url: await this.traeDownloadUrl(commit, arch), type: "auto" };
       case DEVIN_CONFIG:
-        return this.devinDownloadUrl(commit, quality, os, arch);
+        return { url: this.devinDownloadUrl(commit, quality, os, arch), type: "auto" };
       case ANTIGRAVITY_CONFIG:
-        return this.antigravityDownloadUrl(commit, quality, os, arch);
+        return { url: this.antigravityDownloadUrl(commit, quality, os, arch), type: "auto" };
       case QODER_CONFIG:
-        return this.qoderDownloadUrl(commit, os, arch);
+        return { url: this.qoderDownloadUrl(commit, os, arch), type: "auto" };
       case VSCODE_OSS_CONFIG:
-        return this.vscodeOssDownloadUrl(os, arch);
+        return { url: await this.vscodeOssDownloadUrl(os, arch), type: "auto" };
+      case VSCODIUM_CONFIG:
+        return { url: this.vscodiumDownloadUrl(os, arch), type: "auto" };
       default:
-        return this.vscodiumDownloadUrl(os, arch);
+        return { url: this.vscodiumDownloadUrl(os, arch), type: "fallback" };
     }
   }
 

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 const mockAdapter = {
   serverApplicationName: "code-server-oss",
   serverDataFolderName: ".zygos-server",
-  getServerDownloadUrl: () => "https://example.com/server",
+  getServerDownloadUrl: () => ({ url: "https://example.com/server", type: "auto" as const }),
   readAuthFiles: undefined,
 };
 const mockProductInfo = {

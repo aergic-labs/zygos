@@ -55,7 +55,7 @@ export const FORK_TEMPLATES: ForkTemplate[] = [
   },
   {
     id: "vscode-oss",
-    name: "VSCode-OSS",
+    name: "Code-OSS",
     template:
       "https://github.com/VSCodium/vscodium/releases/download/${nearestVsCodiumVersion}/vscodium-reh-${os}-${arch}-${nearestVsCodiumVersion}.tar.gz",
     checksumMethod: "sidecar",
@@ -114,6 +114,12 @@ export const FORK_TEMPLATES: ForkTemplate[] = [
     template:
       "https://download.qoder.com/server/${productVersion}/${commit}/qoder-reh-${os}-${arch}-${productVersion}.tar.gz",
     checksumAlgo: "md5",
+  },
+  {
+    id: "bob",
+    name: "Bob",
+    template:
+      "https://api.us-east.bob.ibm.com/update/reh/ibm-bob/${os}/${arch}/${version}",
   },
   {
     id: "custom",

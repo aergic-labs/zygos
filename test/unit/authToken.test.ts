@@ -14,7 +14,7 @@ function makeAdapter(files: { path: string; content: string }[] | undefined): Pl
     dataFolderName: ".test",
     serverDataFolderName: ".test-server",
     serverApplicationName: "test-server",
-    getServerDownloadUrl: () => "",
+    getServerDownloadUrl: () => ({ url: "", type: "auto" as const }),
     needsArgvPatch: () => false,
     isValidRuntime: () => true,
     readAuthFiles: files === undefined ? undefined : () => files!,
@@ -30,7 +30,7 @@ describe("copyAuthFiles", () => {
       dataFolderName: ".test",
       serverDataFolderName: ".test-server",
       serverApplicationName: "test-server",
-      getServerDownloadUrl: () => "",
+      getServerDownloadUrl: () => ({ url: "", type: "auto" as const }),
       needsArgvPatch: () => false,
       isValidRuntime: () => true,
       // no readAuthFiles

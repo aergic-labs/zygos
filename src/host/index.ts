@@ -22,7 +22,7 @@ import type { Logger } from "../common/logger";
 import { getConfigPath, sshSettings } from "../ssh/sshConfig";
 import { encodeAuthority, parseSshDestination } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
-import { buildServerDownloadUrl } from "../remote/url";
+import { buildServerDownloadUrl, downloadUrlLogMessage } from "../remote/url";
 import type {
   FolderDescriptor,
   FolderHistoryManager,
@@ -257,7 +257,9 @@ async function runTestDownloadUrl(logger: Logger): Promise<void> {
 
   let url: string;
   try {
-    url = await buildServerDownloadUrl(info, platform, os, arch);
+    const result = await buildServerDownloadUrl(info, platform, os, arch);
+    logger.info(downloadUrlLogMessage(platform, result.type));
+    url = result.url;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     void vscode.window.showErrorMessage(`Failed to resolve URL: ${msg}`);

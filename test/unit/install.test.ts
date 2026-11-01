@@ -36,8 +36,10 @@ function makeAdapter(): PlatformAdapter {
     dataFolderName: ".test",
     serverDataFolderName: ".test-server",
     serverApplicationName: "test-server",
-    getServerDownloadUrl: () =>
-      "https://example.com/test-server-linux-x64.tar.gz",
+    getServerDownloadUrl: () => ({
+      url: "https://example.com/test-server-linux-x64.tar.gz",
+      type: "auto" as const,
+    }),
     needsArgvPatch: () => false,
     isValidRuntime: () => true,
   };

@@ -64,6 +64,30 @@ if (target !== "kiro" && target !== "vscodium") {
   process.exit(1);
 }
 
+// Sections shared from README.md (delimited by <!-- BEGIN:name --> ...
+// <!-- END:name -->). Substituted into vendor READMEs at package time so
+// shared content lives once in README.md.
+const readmeSections = (() => {
+  const src = fs.readFileSync(path.join(root, "README.md"), "utf-8");
+  const sections = {};
+  const re = /<!-- BEGIN:(\S+) -->\r?\n([\s\S]*?)<!-- END:\1 -->/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    sections[m[1]] = m[2].replace(/\n$/, "");
+  }
+  return sections;
+})();
+
+function expandSections(text) {
+  return text.replace(/\{\{section:(\S+)\}\}/g, (_match, name) => {
+    const content = readmeSections[name];
+    if (content === undefined) {
+      throw new Error(`MISSING section "${name}" in README.md`);
+    }
+    return content;
+  });
+}
+
 const basePkgPath = path.join(root, "package.json");
 const vendorDir = path.join(root, "vendor", target);
 const vendorPkgPath = path.join(vendorDir, "package.json");
@@ -137,18 +161,11 @@ try {
     stripFromMerged(merged, stripSpec);
   }
 
-  // README: vscodium has its own; others use the template.
-  let readme;
-  if (target === "vscodium") {
-    readme = fs.readFileSync(path.join(vendorDir, "README.md"), "utf-8");
-  } else {
-    const templatePath = path.join(root, "vendor", "README.template.md");
-    readme = fs.readFileSync(templatePath, "utf-8");
-    const platform = vendorOverride.platform ?? {};
-    const name = platform.name ?? "Kiro";
-    const url = name === "Kiro" ? "https://kiro.dev" : "https://vscodium.com";
-    readme = readme.replace(/\{\{NAME\}\}/g, name).replace(/\{\{URL\}\}/g, url);
-  }
+  // README: each target ships its own vendor README; shared sections
+  // expand from the root README.md via {{section:name}}.
+  const vendorReadmePath = path.join(vendorDir, "README.md");
+  let readme = fs.readFileSync(vendorReadmePath, "utf-8");
+  readme = expandSections(readme);
 
   // Copy project files, skipping dirs that .vscodeignore would exclude.
   const SKIP = new Set([

@@ -77,11 +77,28 @@ export function getProductInfo(adapter: PlatformAdapter): ProductInfo {
         ? product.serverDataFolderName
         : adapter.serverDataFolderName,
   };
-  return mergeServerDownloadConfig(
+  const merged = mergeServerDownloadConfig(
     raw,
     adapter.getChecksumConfig?.(),
     "zygos",
   );
+  // Product.json-level template (e.g. Bob ships serverDownloadUrlTemplate).
+  // Takes effect in auto mode; user setting in custom mode is already set
+  // on `merged` by mergeServerDownloadConfig above.
+  if (!merged.serverDownloadUrlTemplate) {
+    if (typeof product.serverDownloadUrlTemplate === "string") {
+      merged.serverDownloadUrlTemplate = product.serverDownloadUrlTemplate;
+    } else if (product.remote && typeof product.remote === "object") {
+      const remote = product.remote as Record<string, unknown>;
+      if (remote.SSH && typeof remote.SSH === "object") {
+        const ssh = remote.SSH as Record<string, unknown>;
+        if (typeof ssh.serverDownloadUrlTemplate === "string") {
+          merged.serverDownloadUrlTemplate = ssh.serverDownloadUrlTemplate;
+        }
+      }
+    }
+  }
+  return merged;
 }
 
 export type { PlatformAdapter, ProductInfo } from "./types";

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0]
+
+### Added
+
+- IBM Bob IDE support: `bob` in `FORK_TEMPLATES`, `applicationName` detection in `VSCodiumAdapter` (`.bobide` / `.bobide-server`, `bobide-server`).
+- `getProductInfo` reads `serverDownloadUrlTemplate` from `product.json` for REH download.
+- Download URL type (`custom` / `auto` / `fallback`) logged to the Output channel via shared `downloadUrlLogMessage()`.
+
+### Fixed
+
+- Bumped `follow-redirects`, `minimatch`, and `glob` via npm overrides to clear advisories (GHSA-mrwp-f3q8-3g9p, GHSA-g3hv-75wg-m249, GHSA-3g3m-2fjr-6pw4).
+
+### Changed
+
+- Keywords, README, and fork display names updated for supported IDEs; README refactored into shared sections inherited by vendor extenders.
+- Go 1.26+ build requirement documented.
+
 ## [0.6.1]
 
 ### Fixed

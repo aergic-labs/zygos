@@ -33,8 +33,10 @@ function makeProductInfo(overrides: Partial<DownloadTemplateInfo> = {}): Downloa
 
 const stubAdapter: DownloadAdapter = {
   name: "Test",
-  getServerDownloadUrl: (commit, _quality, os, arch) =>
-    `https://example.com/${commit}/${os}-${arch}.tar.gz`,
+  getServerDownloadUrl: (commit, _quality, os, arch) => ({
+    url: `https://example.com/${commit}/${os}-${arch}.tar.gz`,
+    type: "auto",
+  }),
 };
 
 describe("substituteTemplate", () => {
@@ -233,18 +235,20 @@ describe("buildServerDownloadUrl", () => {
       serverDownloadUrlTemplate:
         "https://cdn.test/${version}/reh-${os}-${arch}.tar.gz",
     });
-    const url = await buildServerDownloadUrl(info, stubAdapter, "linux", "x64");
+    const { url, type } = await buildServerDownloadUrl(info, stubAdapter, "linux", "x64");
+    expect(type).toBe("custom");
     expect(url).toBe("https://cdn.test/1.2.3/reh-linux-x64.tar.gz");
   });
 
   it("falls back to adapter.getServerDownloadUrl when no template", async () => {
     const info = makeProductInfo();
-    const url = await buildServerDownloadUrl(
+    const { url, type } = await buildServerDownloadUrl(
       info,
       stubAdapter,
       "linux",
       "arm64",
     );
+    expect(type).toBe("auto");
     expect(url).toBe("https://example.com/abc123/linux-arm64.tar.gz");
   });
 
@@ -252,7 +256,8 @@ describe("buildServerDownloadUrl", () => {
     const info = makeProductInfo({
       serverDownloadUrlTemplate: "https://template.test/${commit}",
     });
-    const url = await buildServerDownloadUrl(info, stubAdapter, "linux", "x64");
+    const { url, type } = await buildServerDownloadUrl(info, stubAdapter, "linux", "x64");
+    expect(type).toBe("custom");
     expect(url).toBe("https://template.test/abc123");
   });
 });

@@ -18,6 +18,7 @@ describe("FORK_TEMPLATES", () => {
       "devin",
       "antigravity",
       "qoder",
+      "bob",
       "custom",
     ]);
   });

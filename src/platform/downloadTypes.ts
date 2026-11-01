@@ -27,6 +27,13 @@ export interface MinimalLogger {
  * method. PlatformAdapter extends this; other projects' adapters that
  * provide these two members satisfy it structurally.
  */
+export type DownloadUrlType = "auto" | "fallback";
+
+export interface DownloadUrlResult {
+  url: string;
+  type: DownloadUrlType;
+}
+
 export interface DownloadAdapter {
   /** Human-readable IDE name (e.g. "Kiro"). */
   readonly name: string;
@@ -34,14 +41,16 @@ export interface DownloadAdapter {
   /**
    * Build the server download URL for the given commit, OS, and arch.
    * Used as the fallback when no custom template is configured via
-   * `<ns>.serverDownload.template` (mode="custom").
+   * `<ns>.serverDownload.template` (mode="custom"). Returns the URL
+   * and whether the fork was recognized (type "auto") or fell through
+   * to the vscodium default (type "fallback").
    */
   getServerDownloadUrl(
     commit: string,
     quality: string,
     os: string,
     arch: string,
-  ): string | Promise<string>;
+  ): DownloadUrlResult | Promise<DownloadUrlResult>;
 }
 
 /**

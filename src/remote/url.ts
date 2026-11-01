@@ -108,7 +108,7 @@ export async function buildServerDownloadUrl(
   adapter: DownloadAdapter,
   os: string,
   arch: string,
-): Promise<string> {
+): Promise<{ url: string; type: "custom" | "auto" | "fallback" }> {
   if (info.serverDownloadUrlTemplate) {
     const { url, unresolved } = await resolveTemplateUrl(
       info.serverDownloadUrlTemplate,
@@ -121,7 +121,25 @@ export async function buildServerDownloadUrl(
         `Server download URL has unresolved variables: ${unresolved.join(", ")}`,
       );
     }
-    return url;
+    return { url, type: "custom" };
   }
   return adapter.getServerDownloadUrl(info.commit, info.quality, os, arch);
+}
+
+/**
+ * Build the log line for a `buildServerDownloadUrl` result. Callers log
+ * this to their Output channel — `buildServerDownloadUrl` itself stays
+ * logger-free so the shared download stack has no logger dependency.
+ */
+export function downloadUrlLogMessage(
+  adapter: { name: string },
+  type: "custom" | "auto" | "fallback",
+): string {
+  if (type === "custom") {
+    return `[download] using your custom server URL template`;
+  }
+  if (type === "fallback") {
+    return `[download] no ${adapter.name}-specific server URL; using the vscodium-reh server tarball`;
+  }
+  return `[download] using the ${adapter.name} server tarball`;
 }

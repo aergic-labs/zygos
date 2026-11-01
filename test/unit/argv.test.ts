@@ -26,7 +26,7 @@ function makeAdapter(
     dataFolderName: ".test-ide",
     serverDataFolderName: ".test-server",
     serverApplicationName: "test-server",
-    getServerDownloadUrl: () => "https://example.com",
+    getServerDownloadUrl: () => ({ url: "https://example.com", type: "auto" as const }),
     needsArgvPatch: () => true,
     isValidRuntime: () => true,
     ...overrides,

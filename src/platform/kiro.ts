@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { PlatformAdapter } from "./types";
+import type { DownloadUrlResult } from "./downloadTypes";
 import { readProductJson } from "./index";
 
 /** Local path (under $HOME) to the Kiro SSO auth token. */
@@ -69,8 +70,11 @@ export class KiroAdapter implements PlatformAdapter {
     _quality: string,
     os: string,
     arch: string,
-  ): string {
-    return `https://prod.download.desktop.kiro.dev/releases/remotes/${commit}/kiro-reh-${os}-${arch}.tar.gz`;
+  ): DownloadUrlResult {
+    return {
+      url: `https://prod.download.desktop.kiro.dev/releases/remotes/${commit}/kiro-reh-${os}-${arch}.tar.gz`,
+      type: "auto",
+    };
   }
 
   needsArgvPatch(): boolean {

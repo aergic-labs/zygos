@@ -1,12 +1,16 @@
 {
   "name": "zygos-vscodium",
   "displayName": "Zygos Remote SSH for VSCodium",
-  "description": "Connect to any remote machine via SSH from VSCodium, code-oss, or VSCodium-OSS. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary. Zero-config for VSCodium; customizable for forks and custom builds.",
+  "description": "Connect to any remote machine via SSH from VSCodium-based IDEs. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary. Zero-config for VSCodium, code-oss, Trae, Devin, Antigravity, Qoder, and IBM Bob; customizable for custom builds.",
   "keywords": [
     "vscodium",
     "codium",
     "code-oss",
-    "vscode-oss",
+    "trae",
+    "devin",
+    "antigravity",
+    "qoder",
+    "ibm bob",
     "remote ssh",
     "remote-ssh",
     "ssh",
