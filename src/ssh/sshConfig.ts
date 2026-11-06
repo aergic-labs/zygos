@@ -57,7 +57,7 @@ export function sshSettings(): {
   configFile?: string;
   handshakeTimeoutMs?: number;
   tcpTimeoutSeconds?: number;
-  usePersistentConnection?: boolean;
+  usePersistentSession?: boolean;
 } {
   const cfg = vscode.workspace.getConfiguration("zygos");
   const expand = (v: string): string =>
@@ -70,13 +70,13 @@ export function sshSettings(): {
   const tcpTimeoutSeconds = resolveTcpSeconds(
     cfg.get<number>("tcpTimeout", 15),
   );
-  const usePersistentConnection = cfg.get<boolean>("usePersistentConnection", false);
+  const usePersistentSession = cfg.get<boolean>("usePersistentSession", true);
   return {
     sshPath: sshPath ? expand(sshPath) : undefined,
     configFile: configFile ? expand(configFile) : undefined,
     handshakeTimeoutMs,
     tcpTimeoutSeconds,
-    usePersistentConnection,
+    usePersistentSession,
   };
 }
 

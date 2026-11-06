@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0]
+
+### Changed
+
+- The persistent SSH session (previously `zygos.usePersistentConnection`, experimental, default off) is now the default and renamed to `zygos.usePersistentSession` (default `true`). One ssh session + one Go transport per authority, refcounted across `resolve()` and `resolveExecServer()` and reused on reload instead of orphaned. To opt out and open a fresh ssh connection per command, uncheck `zygos.usePersistentSession`. Restart required if changed.
+- OpenVSX listing descriptions shortened to a one-line summary per vendor (Kiro; VSCodium build lists VSCodium, code-oss, Trae, Devin, Antigravity, Qoder, IBM Bob).
+- The `platform` block is dropped from `vendor/kiro/package.json` and `vendor/vscodium/package.json`; fork detection has lived in `src/platform/` since 0.7.0.
+
+
+### Fixed
+
+- `scripts/askpass/askpass.sh` ships with the exec bit set (git index `100755`) so unix/WSL build hosts produce an executable askpass without a post-extract step.
+
 ## [0.7.0]
 
 ### Added

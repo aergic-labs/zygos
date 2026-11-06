@@ -176,9 +176,9 @@ export async function activate(
     rotationDays,
   );
 
-  // Initialize the ssh session secret when persistent connection is enabled.
-  const { usePersistentConnection } = sshSettings();
-  if (usePersistentConnection) {
+  // Initialize the ssh session secret when persistent session is enabled.
+  const { usePersistentSession } = sshSettings();
+  if (usePersistentSession) {
     const sessionKeyRotationDays = vscode.workspace
       .getConfiguration("zygos")
       .get<number>("sessionKeyRotationDays", 7);
@@ -188,7 +188,7 @@ export async function activate(
       "zygos.sshSession.masterkey",
       sessionKeyRotationDays,
     );
-    logger.info("[activate] persistent connection enabled");
+    logger.info("[activate] persistent session enabled");
   }
 
   // Initialize the VSCodium release feed used by the vscode-oss fork.

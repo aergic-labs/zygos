@@ -601,7 +601,7 @@ describe("SshRemoteResolver shared transport (session path)", () => {
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    setConfig("zygos.usePersistentConnection", true);
+    setConfig("zygos.usePersistentSession", true);
     sessionSecretReady = true;
     factoryCalls = 0;
     (ZygosTransport as any).instances.length = 0;
@@ -1025,7 +1025,8 @@ describe("SshRemoteResolver non-session path (no sharing)", () => {
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    // usePersistentConnection stays false; sessionSecretReady stays false.
+    setConfig("zygos.usePersistentSession", false);
+    // usePersistentSession unchecked (opt-out); sessionSecretReady stays false.
     factoryCalls = 0;
     (ZygosTransport as any).instances.length = 0;
     fake = new MockSshConnection();

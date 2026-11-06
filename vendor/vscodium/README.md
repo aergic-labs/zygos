@@ -24,6 +24,8 @@ Everything else is bundled with the extension.
 4. A new window opens on the remote. The first connect downloads the
    server and bootstraps busybox; subsequent connects are fast.
 
+{{section:persistent-session}}
+
 {{section:configuration}}
 
 {{section:custom-download}}

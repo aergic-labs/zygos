@@ -29,8 +29,11 @@ OpenSSH.
 - **Server bootstrap** - vendored busybox provides a known POSIX env on
   the remote, verified against pinned SHA256 with provenance manifest;
   server tarball streamed client-side over stdin.
-- **Server reuse** - detects and reuses an existing running server across
-  windows instead of killing and restarting.
+- **Persistent SSH session** - one ssh process per window, reused across
+  resolve and exec server, with a Go transport on the remote for file ops
+  and streaming exec. See [Persistent SSH session](#persistent-ssh-session).
+- **REH server reuse** - detects and reuses an existing running REH
+  server across windows instead of killing and restarting.
 - **Sleep/wake resilience** - timer-skew detection repairs the SSH tunnel
   after OS sleep/hibernate.
 - **Askpass with persistent cache** - password and passphrase prompts
@@ -117,6 +120,26 @@ See `tools/busybox/PROVENANCE.md` for full details.
 4. A new window opens on the remote. The first connect downloads the
    server and bootstraps busybox; subsequent connects are fast.
 
+<!-- BEGIN:persistent-session -->
+## Persistent SSH session
+
+By default, Zygos keeps one SSH session per window open for the lifetime of the
+remote connection and reuses it across every remote operation — resolving the
+authority, starting the server, running remote commands — instead of opening a
+fresh SSH connection per command. One ssh process per window means fewer auth
+prompts and a single SOCKS5 forward for the whole window.
+
+On the remote, Zygos runs a small Go transport over that SOCKS5 forward.
+File ops, streaming exec, and server lifecycle (status, cleanup, restart)
+go through it as RPCs instead of shelling out per operation, so round-trips
+that used to spawn a shell each now stream over the existing session. The
+transport is detached and refcounted alongside the SSH session; reload reuses
+a running transport instead of orphaning it.
+
+If you run into a regression, uncheck `zygos.usePersistentSession` to fall
+back to one SSH connection per command. Restart required if changed.
+<!-- END:persistent-session -->
+
 <!-- BEGIN:configuration -->
 ## Configuration
 
@@ -135,7 +158,7 @@ See `tools/busybox/PROVENANCE.md` for full details.
 | `zygos.httpsProxy` | `""` | HTTPS proxy URL to forward to the remote server. |
 | `zygos.handshakeTimeout` | `30` | Total timeout in seconds for the complete connection sequence. |
 | `zygos.tcpTimeout` | `15` | Maximum time in seconds to wait for the initial TCP connection. 0 = system default. |
-| `zygos.usePersistentConnection` | `false` | Reuse one ssh process per window for all remote commands. Experimental; restart required. |
+| `zygos.usePersistentSession` | `true` | Reuse one ssh session per window across resolve and exec server, with a Go transport on the remote for file ops and streaming exec. Uncheck to open a fresh ssh connection per command. Restart required if changed. |
 | `zygos.sessionKeyRotationDays` | `7` | Days before the persistent connection master key rotates. 0 = never. |
 <!-- END:configuration -->
 

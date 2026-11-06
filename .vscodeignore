@@ -1,9 +1,7 @@
 # Build artifacts (regenerated)
 dist/**
 !dist/extension.js
-!dist/extension.js.map
 !dist/localServer.js
-!dist/localServer.js.map
 
 # Source / dev - not needed at runtime in the VSIX
 src/**

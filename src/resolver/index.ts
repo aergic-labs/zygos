@@ -146,10 +146,9 @@ interface RemoteConnection {
 }
 
 /** Options governing transport acquisition. The shared-transport
- *  refactor only applies when `share` is set (the experimental
- *  `usePersistentConnection` path); the default non-session path keeps
- *  the legacy standalone behavior (own ssh connection per flow, no
- *  refcounting). */
+ *  refactor only applies when `share` is set (the `usePersistentSession`
+ *  path); the default non-session path keeps the legacy standalone
+ *  behavior (own ssh connection per flow, no refcounting). */
 interface TransportAcquireOptions {
   /** Register in `this.transports` and refcount across flows. */
   share: boolean;
@@ -233,8 +232,8 @@ export class SshRemoteResolver {
     dest: { host: string; user?: string; port?: number },
     opts: Partial<SshConnectOptions>,
   ): ISshConnection {
-    const { usePersistentConnection } = sshSettings();
-    if (usePersistentConnection && this.sshSessionDeps && sshSessionSecretReady()) {
+    const { usePersistentSession } = sshSettings();
+    if (usePersistentSession && this.sshSessionDeps && sshSessionSecretReady()) {
       return SshSession.fromDestination(dest, opts, {
         ...this.sshSessionDeps,
         logger: this.logger,
@@ -304,12 +303,11 @@ export class SshRemoteResolver {
 
     let shared: SharedTransport | undefined;
     try {
-      // Share the transport across flows only on the experimental session
-      // path. The default non-session path keeps the legacy behavior: each
-      // resolve() opens its own ssh connection (no sharing with
-      // resolveExecServer()).
+      // Share the transport across flows only on the session path. The
+      // default non-session path keeps the legacy behavior: each resolve()
+      // opens its own ssh connection (no sharing with resolveExecServer()).
       const isSession =
-        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+        sshSettings().usePersistentSession === true && sshSessionSecretReady();
 
       // Session path only: reuse an existing healthy per-flow connection
       // BEFORE acquiring a transport, so we don't bump the shared refcount
@@ -1493,13 +1491,13 @@ export class SshRemoteResolver {
 
     let shared: SharedTransport | undefined;
     try {
-      // Share the transport with resolve() only on the experimental session
-      // path. The default non-session path keeps the legacy behavior: own
-      // ssh connection, no install probe, no agent forward (the resolve
-      // flow's install covers the host; execServer just relays through its
-      // own ssh -D).
+      // Share the transport with resolve() only on the session path. The
+      // default non-session path keeps the legacy behavior: own ssh
+      // connection, no install probe, no agent forward (the resolve flow's
+      // install covers the host; execServer just relays through its own
+      // ssh -D).
       const isSession =
-        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+        sshSettings().usePersistentSession === true && sshSessionSecretReady();
       shared = await this.acquireTransport(authority, dest, () => {}, {
         share: isSession,
         install: isSession,
@@ -1664,7 +1662,7 @@ export class SshRemoteResolver {
     try {
       report("Connecting via SSH...");
       const isSession =
-        sshSettings().usePersistentConnection === true && sshSessionSecretReady();
+        sshSettings().usePersistentSession === true && sshSessionSecretReady();
       const sessionSocksPort = isSession ? await findFreePort() : undefined;
       const conn = this.connectionFactory!(dest, {
         logger: this.logger,

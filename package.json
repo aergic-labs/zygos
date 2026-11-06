@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -318,10 +318,10 @@
           "description": "Maximum time in seconds to wait for the initial TCP connection to establish. Set to 0 to use the system default.",
           "order": 21
         },
-        "zygos.usePersistentConnection": {
+        "zygos.usePersistentSession": {
           "type": "boolean",
-          "default": false,
-          "description": "Reuse a single ssh process per window for all remote commands instead of one ssh per command. Faster, with fewer repeated auth prompts. Experimental; restart required.",
+          "default": true,
+          "description": "Reuse one ssh session per window across resolve and exec server, with a Go transport on the remote for file ops and streaming exec. Uncheck to open a fresh ssh connection per command. Restart required if changed.",
           "order": 22
         },
         "zygos.sessionKeyRotationDays": {
@@ -330,6 +330,12 @@
           "minimum": 0,
           "description": "Days before the persistent connection master key rotates. 0 = never rotate. Default 7.",
           "order": 23
+        },
+        "zygos.usePersistentConnection": {
+          "type": "boolean",
+          "default": false,
+          "markdownDeprecationMessage": "Renamed to `zygos.usePersistentSession`; this setting has no effect. Right click and select \"reset setting\" or remove it from `settings.json`.",
+          "order": 24
         }
       }
     }

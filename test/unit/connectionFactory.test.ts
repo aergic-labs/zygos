@@ -68,7 +68,8 @@ describe("defaultConnectionFactory", () => {
     resetConfig();
   });
 
-  it("returns SshConnection when the setting is off", () => {
+  it("returns SshConnection when usePersistentSession is unchecked", () => {
+    setConfig("zygos.usePersistentSession", false);
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -82,8 +83,8 @@ describe("defaultConnectionFactory", () => {
     expect(conn).not.toBeInstanceOf(SshSession);
   });
 
-  it("returns SshSession when the setting is on and secret is ready", () => {
-    setConfig("zygos.usePersistentConnection", true);
+  it("returns SshSession when usePersistentSession is checked and secret is ready", () => {
+    setConfig("zygos.usePersistentSession", true);
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -96,8 +97,8 @@ describe("defaultConnectionFactory", () => {
     expect(conn).toBeInstanceOf(SshSession);
   });
 
-  it("falls back to SshConnection when the setting is on but sshSessionDeps is missing", () => {
-    setConfig("zygos.usePersistentConnection", true);
+  it("falls back to SshConnection when usePersistentSession is checked but sshSessionDeps is missing", () => {
+    setConfig("zygos.usePersistentSession", true);
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -111,9 +112,9 @@ describe("defaultConnectionFactory", () => {
     expect(conn).not.toBeInstanceOf(SshSession);
   });
 
-  it("falls back to SshConnection when the setting is on but secret is not initialized", () => {
+  it("falls back to SshConnection when usePersistentSession is checked but secret is not initialized", () => {
     disposeSshSessionSecret();
-    setConfig("zygos.usePersistentConnection", true);
+    setConfig("zygos.usePersistentSession", true);
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
