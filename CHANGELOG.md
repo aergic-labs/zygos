@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1]
+
+### Fixed
+
+- `zygos.showServerLog` and `zygos.openTerminal` now wire `ConnectTimeout` and askpass (host-key/password/passphrase via the VS Code input box) the same way the persistent session does, instead of prompting in the terminal.
+- The askpass cache's master-key migration now persists the migrated format to SecretStorage. Previously it ran in memory only and re-migrated every restart, so the key-rotation clock (`zygos.sessionKeyRotationDays`) never started for migrated users.
+
 ## [0.8.0]
 
 ### Changed

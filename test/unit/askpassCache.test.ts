@@ -370,3 +370,34 @@ describe("persistence across instances", () => {
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
   });
 });
+
+// --- master-key format migration (bare base64 -> JSON record) ---
+
+describe("master-key migration", () => {
+  it("migrates a bare-base64 secret to the JSON record format one-shot", async () => {
+    const secrets = makeMockSecrets();
+    // Seed the old format: a bare base64 string, no JSON wrapper.
+    const bareBase64 = Buffer.alloc(32, 0x41).toString("base64");
+    await secrets.store("test.askpass.masterkey", bareBase64);
+
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aergic-migrate-"));
+    dbPath = path.join(tempDir, "askpass.db");
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+    await disposeCache();
+
+    // After the first init, the secret should be the new JSON format.
+    const stored = await secrets.get("test.askpass.masterkey");
+    expect(stored).toBeDefined();
+    const parsed = JSON.parse(stored);
+    expect(parsed).toHaveProperty("key", bareBase64);
+    expect(typeof parsed.createdAt).toBe("number");
+
+    // Second init should NOT re-migrate (the JSON parses cleanly now).
+    const before = await secrets.get("test.askpass.masterkey");
+    await initCache(secrets, dbPath, mockLogger, "test.askpass.masterkey");
+    const after = await secrets.get("test.askpass.masterkey");
+    expect(after).toBe(before);
+    await disposeCache();
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+});

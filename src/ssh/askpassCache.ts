@@ -294,6 +294,15 @@ class PersistentAskpassCache {
       } catch {
         // Old format: raw was a bare base64 string. Migrate it.
         record = { key: raw, createdAt: Date.now() };
+        // Persist the new JSON format so the migration is one-shot; without
+        // this, the next activation re-reads the old bare-base64 value,
+        // JSON.parse fails again, and the migration re-runs every restart.
+        // Stamping createdAt = now also starts the rotation clock from the
+        // first migration (not the original install), which is acceptable.
+        await this.secrets.store(
+          this.masterKeyId,
+          JSON.stringify({ key: record.key, createdAt: record.createdAt }),
+        );
         this.logger.info("[askpass-cache] migrating master key to new format");
       }
       masterKey = Buffer.from(record.key, "base64");

@@ -18,11 +18,14 @@
  */
 
 import * as vscode from "vscode";
+import * as path from "node:path";
 import type { Logger } from "../common/logger";
 import { getConfigPath, sshSettings } from "../ssh/sshConfig";
 import { encodeAuthority, parseSshDestination } from "../ssh/destination";
 import { detectPlatform, getProductInfo } from "../platform";
 import { buildServerDownloadUrl, downloadUrlLogMessage } from "../remote/url";
+import { REMOTE_DIR_NAME } from "../remote/busybox";
+import { AskpassServer } from "../ssh/askpassServer";
 import type {
   FolderDescriptor,
   FolderHistoryManager,
@@ -105,38 +108,51 @@ export function registerHostCommands(
       "zygos.openTerminal",
       async (item: HostItem) => {
         if (!item) return;
-        const { sshPath, configFile } = sshSettings();
-        const sshArgs: string[] = [];
-        if (configFile) sshArgs.push("-F", configFile);
-        sshArgs.push(item.alias);
         logger.info(`[terminal] opening on ${item.alias}`);
+        const opts = await buildSshTerminalOptions(context, logger, item.alias);
         const terminal = vscode.window.createTerminal({
           name: `SSH: ${item.alias}`,
-          shellPath: sshPath ?? "ssh",
-          shellArgs: sshArgs,
+          shellPath: opts.sshPath,
+          shellArgs: opts.sshArgs,
+          env: opts.env,
         });
+        if (opts.onClose) {
+          const disp = vscode.window.onDidCloseTerminal((t) => {
+            if (t !== terminal) return;
+            void opts.onClose?.();
+            disp.dispose();
+          });
+          context.subscriptions.push(disp);
+        }
         terminal.show();
       },
     ),
 
-    // Tail the server log on the host.
+    // Tail the server log on the host. The session-path server start
+    // wrapper (`scripts/sshSession/start-server.sh`) redirects the REH
+    // server's stdout+stderr to ~/.ssh-remote/server-start.log (see
+    // `startServerSession` in `src/resolver/index.ts`).
     vscode.commands.registerCommand(
       "zygos.showServerLog",
       async (item: HostItem) => {
         if (!item) return;
-        const { sshPath, configFile } = sshSettings();
-        const sshArgs: string[] = [];
-        if (configFile) sshArgs.push("-F", configFile);
-        sshArgs.push(item.alias);
-        const platform = detectPlatform();
-        const info = getProductInfo(platform);
-        const logPath = `~/.${info.serverDataFolderName}/.${info.commit}.log`;
+        const logPath = `~/${REMOTE_DIR_NAME}/server-start.log`;
         logger.info(`[server-log] tailing ${logPath} on ${item.alias}`);
+        const opts = await buildSshTerminalOptions(context, logger, item.alias);
         const terminal = vscode.window.createTerminal({
           name: `Server Log: ${item.alias}`,
-          shellPath: sshPath ?? "ssh",
-          shellArgs: [...sshArgs, `tail -f ${logPath}`],
+          shellPath: opts.sshPath,
+          shellArgs: [...opts.sshArgs, `tail -f ${logPath}`],
+          env: opts.env,
         });
+        if (opts.onClose) {
+          const disp = vscode.window.onDidCloseTerminal((t) => {
+            if (t !== terminal) return;
+            void opts.onClose?.();
+            disp.dispose();
+          });
+          context.subscriptions.push(disp);
+        }
         terminal.show();
       },
     ),
@@ -207,6 +223,89 @@ export function registerHostCommands(
       ),
     );
   }
+}
+
+/**
+ * Build ssh args + env for a terminal ssh invocation (zygos.openTerminal,
+ * zygos.showServerLog). Mirrors SshSession.buildSshConfig so the terminal
+ * ssh gets the same host-key handling, connect timeout, and askpass wiring
+ * as the persistent session:
+ *   - ConnectTimeout: from zygos.tcpTimeout (default 15s).
+ *   - askpass (when zygos.askpass, default true): route password/passphrase
+ *     prompts through a VS Code input box instead of the terminal. The
+ *     AskpassServer is started here and disposed when the terminal closes
+ *     (onClose). Matches SshSession.buildSshConfig, which also leaves
+ *     StrictHostKeyChecking at ssh's default and routes the host-key
+ *     confirmation through askpass so a user's `~/.ssh/config`
+ *     StrictHostKeyChecking setting is respected (not overridden by -o).
+ */
+async function buildSshTerminalOptions(
+  context: vscode.ExtensionContext,
+  logger: Logger,
+  alias: string,
+): Promise<{
+  sshPath: string;
+  sshArgs: string[];
+  env?: Record<string, string>;
+  onClose?: () => Promise<void>;
+}> {
+  const { sshPath, configFile, tcpTimeoutSeconds } = sshSettings();
+  const sshArgs: string[] = [];
+  if (tcpTimeoutSeconds && tcpTimeoutSeconds > 0) {
+    sshArgs.push("-o", `ConnectTimeout=${tcpTimeoutSeconds}`);
+  }
+  if (configFile) sshArgs.push("-F", configFile);
+  sshArgs.push(alias);
+
+  const askpassEnabled = vscode.workspace
+    .getConfiguration("zygos")
+    .get<boolean>("askpass", true);
+  if (!askpassEnabled) {
+    return { sshPath: sshPath ?? "ssh", sshArgs };
+  }
+
+  // Best-effort askpass: if the server fails to start, fall back to
+  // terminal prompts rather than blocking the command.
+  let server: AskpassServer | undefined;
+  try {
+    server = new AskpassServer(logger, {
+      showPrompt: (prompt, errorMessage) =>
+        vscode.window.showInputBox({
+          password: true,
+          prompt: errorMessage ? `${prompt} (${errorMessage})` : prompt,
+          title: "Zygos SSH Authentication",
+          ignoreFocusOut: true,
+        }),
+    });
+    await server.start();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.info(`[host] askpass server start failed, falling back to terminal prompts: ${msg}`);
+    return { sshPath: sshPath ?? "ssh", sshArgs };
+  }
+
+  const scriptsDir = path.join(context.extensionPath, "scripts", "askpass");
+  const script =
+    process.platform === "win32"
+      ? path.join(scriptsDir, "askpass.cmd")
+      : path.join(scriptsDir, "askpass.sh");
+  const main = path.join(scriptsDir, "askpass-main.js");
+  const nodePath = process.execPath;
+  const env: Record<string, string> = {
+    SSH_ASKPASS: script,
+    SSH_ASKPASS_REQUIRE: "force",
+    DISPLAY: "zygos",
+    AERGIC_SSH_ASKPASS_HANDLE: server.handle,
+    AERGIC_SSH_ASKPASS_TOKEN: server.token,
+    AERGIC_SSH_ASKPASS_NODE: nodePath,
+    AERGIC_SSH_ASKPASS_MAIN: main,
+  };
+  return {
+    sshPath: sshPath ?? "ssh",
+    sshArgs,
+    env,
+    onClose: () => server!.stop(),
+  };
 }
 
 /**
