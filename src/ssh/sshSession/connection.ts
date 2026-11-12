@@ -14,7 +14,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../../common/logger";
 import type { ISshConnection, ExecResult, SshConnectOptions } from "../connection";
-import { shellQuote } from "../../remote/shellQuote";
+
 import { SshSessionClient } from "./client";
 import { SshSessionProcess } from "./process";
 import type { TransportClient } from "../../transport/client";
@@ -153,8 +153,7 @@ export class SshSession implements ISshConnection {
     // remote, so shell semantics (pipes, redirects, && chains) are preserved.
     // Callers that pass a timeout (the health monitor's ssh-alive ping) want
     // to probe the control shell itself, not the transport; leave those on
-    // the ssh-session local server path. Default non-session path never has
-    // a transport set, so this branch is session-only.
+    // the ssh-session local server path.
     if (this.transportClient && !timeoutMs) {
       const r = await this.transportClient.exec("sh", ["-c", command]);
       return {
@@ -182,19 +181,18 @@ export class SshSession implements ISshConnection {
 
   async execWithStdin(command: string, stdinData: Buffer): Promise<ExecResult> {
     this.requireConnected();
-    if (this.transportClient) {
-      const r = await this.transportClient.execWithStdin(command, stdinData);
-      return {
-        stdout: r.stdout.toString("utf-8"),
-        stderr: r.stderr.toString("utf-8"),
-        exitCode: r.exitCode,
-        signal: r.signal,
-      };
+    if (!this.transportClient) {
+      throw new Error(
+        "execWithStdin requires the Go transport; the persistent session is not fully initialized",
+      );
     }
-    // No transport: base64 heredoc via the control shell.
-    const b64 = stdinData.toString("base64");
-    const wrapped = `echo ${shellQuote(b64)} | base64 -d | ${command}`;
-    return this.exec(wrapped);
+    const r = await this.transportClient.execWithStdin(command, stdinData);
+    return {
+      stdout: r.stdout.toString("utf-8"),
+      stderr: r.stderr.toString("utf-8"),
+      exitCode: r.exitCode,
+      signal: r.signal,
+    };
   }
 
   async putFile(
@@ -204,17 +202,30 @@ export class SshSession implements ISshConnection {
     onProgress?: (sent: number, total: number) => void,
   ): Promise<ExecResult> {
     this.requireConnected();
-    if (this.transportClient) {
-      await this.transportClient.putFile(remotePath, content, mode, onProgress);
-      return { stdout: "", stderr: "", exitCode: 0, signal: null };
+    if (!this.transportClient) {
+      throw new Error(
+        "putFile requires the Go transport; use putFileViaControlShell for the pre-transport bootstrap",
+      );
     }
+    await this.transportClient.putFile(remotePath, content, mode, onProgress);
+    return { stdout: "", stderr: "", exitCode: 0, signal: null };
+  }
+
+  /** Write a file over the ssh-session control shell (base64 + nonce exit
+   *  marker). The deliberate pre-transport path: the Go binary bootstrap
+   *  ships this way, since the transport isn't up yet. */
+  async putFileViaControlShell(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+  ): Promise<ExecResult> {
+    this.requireConnected();
     return this.client!.putFile(remotePath, content, mode);
   }
 
-  /** Stream a gzip tarball to the remote and extract it. Uses the Go
-   *  transport when set (no remote gzip/tar/busybox needed); falls back to
-   *  putFile + exec `gzip -dc | tar -xC` for the session-without-transport
-   *  case (e.g. transport failed to start). */
+  /** Stream a gzip tarball to the remote and extract it via the Go
+   *  transport (no remote gzip/tar/busybox needed). The transport is
+   *  required; a missing one is a hard failure. */
   async extract(
     dest: string,
     stripComponents: number,
@@ -222,34 +233,18 @@ export class SshSession implements ISshConnection {
     onProgress?: (sent: number, total: number) => void,
   ): Promise<ExecResult> {
     this.requireConnected();
-    if (this.transportClient) {
-      try {
-        await this.transportClient.extract(dest, stripComponents, content, onProgress);
-        return { stdout: "", stderr: "", exitCode: 0, signal: null };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { stdout: "", stderr: msg, exitCode: 1, signal: null };
-      }
+    if (!this.transportClient) {
+      throw new Error(
+        "extract requires the Go transport; the persistent session is not fully initialized",
+      );
     }
-    // Fallback: upload to a tmp file, then exec gzip|tar.
-    const tmp = `${dest}.tar.gz`;
-    const putResult = await this.putFile(tmp, content, "0600", onProgress);
-    if (putResult.exitCode !== 0) {
-      void this.exec(`rm -f ${tmp}`).catch(() => {});
-      return {
-        stdout: putResult.stdout,
-        stderr: putResult.stderr || putResult.stdout,
-        exitCode: putResult.exitCode,
-        signal: putResult.signal,
-      };
+    try {
+      await this.transportClient.extract(dest, stripComponents, content, onProgress);
+      return { stdout: "", stderr: "", exitCode: 0, signal: null };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { stdout: "", stderr: msg, exitCode: 1, signal: null };
     }
-    const cmd =
-      `gzip -dc ${tmp} | tar -xC ${dest} --strip-components=${stripComponents} && rm -f ${tmp}`;
-    const result = await this.exec(cmd);
-    if (result.exitCode !== 0) {
-      void this.exec(`rm -f ${tmp}`).catch(() => {});
-    }
-    return result;
   }
 
   spawnProcess(command: string | undefined, _extraArgs: string[] = []): ChildProcess {

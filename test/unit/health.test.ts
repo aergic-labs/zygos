@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SleepDetector } from "../../src/health/sleepDetector";
 import { ConnectionMonitor } from "../../src/health/connectionMonitor";
 import type { MonitoredConnection } from "../../src/health/connectionMonitor";
-import type { SshConnection } from "../../src/ssh/connection";
+import type { ISshConnection } from "../../src/ssh/connection";
 import type { Logger } from "../../src/common/logger";
 
 const mockLogger: any = {
@@ -27,13 +27,10 @@ function makeMockConnection(): MonitoredConnection {
   return {
     socksPort: 1080,
     remotePort: 3000,
-    forwardProcess: { killed: false, exitCode: null, signalCode: null } as any,
-    serverProcess: { killed: false, exitCode: null, signalCode: null } as any,
     conn: {
       exec: vi.fn().mockResolvedValue({ exitCode: 0 }),
-    } as unknown as SshConnection,
+    } as unknown as ISshConnection,
     dead: false,
-    ownsServer: true,
   };
 }
 
@@ -132,134 +129,11 @@ describe("ConnectionMonitor", () => {
     }
   }
 
-  it("marks dead when server process is dead and SSH is unreachable", async () => {
+  it("marks dead when the ssh probe fails", async () => {
     const conn = makeMockConnection();
-    // Server process dead.
-    conn.serverProcess = {
-      killed: false,
-      exitCode: 1,
-      signalCode: null,
-    } as any;
-    // SSH unreachable.
     (conn.conn.exec as any).mockRejectedValue(new Error("timeout"));
 
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(1081),
-        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
-    monitor.start();
-
-    // Trigger sleep.
-    await triggerSleepAndProbe();
-
-    expect(conn.dead).toBe(true);
-    monitor.stop();
-  });
-
-  it("restarts SOCKS forward when forward is dead but SSH is alive", async () => {
-    const conn = makeMockConnection();
-    // Forward process dead.
-    conn.forwardProcess = {
-      killed: false,
-      exitCode: 1,
-      signalCode: null,
-    } as any;
-    // SSH alive.
-    (conn.conn.exec as any).mockResolvedValue({ exitCode: 0 });
-
-    const oldForward = conn.forwardProcess;
-    const newForward = {
-      killed: false,
-      exitCode: null,
-      signalCode: null,
-      once: vi.fn(),
-    } as any;
-
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({ process: newForward, agentReady: Promise.resolve(false) }),
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
-    monitor.start();
-
-    // Trigger sleep.
-    await triggerSleepAndProbe();
-
-    expect(conn.dead).toBe(false);
-    expect(conn.socksPort).toBe(2080);
-    expect(conn.forwardProcess).toBe(newForward);
-    expect(oldForward).not.toBe(conn.forwardProcess);
-    // The repaired forward gets its own close listener so its death is
-    // detected immediately, not only at the next periodic probe.
-    expect(newForward.once).toHaveBeenCalledWith("close", expect.any(Function));
-    monitor.stop();
-  });
-
-  it("passes the agent role to the restarted forward", async () => {
-    const conn = makeMockConnection();
-    conn.forwardProcess = {
-      killed: false,
-      exitCode: 1,
-      signalCode: null,
-    } as any;
-    conn.agent = { home: "/home/u", link: "/home/u/.ssh-remote/agent-x" };
-    (conn.conn.exec as any).mockResolvedValue({ exitCode: 0 });
-    const newForward = {
-      killed: false,
-      exitCode: null,
-      signalCode: null,
-      once: vi.fn(),
-    } as any;
-    const startSocksForward = vi.fn().mockReturnValue({
-      process: newForward,
-      agentReady: Promise.resolve(true),
-    });
-
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward,
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
-    monitor.start();
-
-    await triggerSleepAndProbe();
-
-    expect(startSocksForward).toHaveBeenCalledWith(conn.conn, 2080, conn.agent);
-    expect(conn.forwardProcess).toBe(newForward);
-    monitor.stop();
-  });
-
-  it("marks dead when both forward and SSH are dead", async () => {
-    const conn = makeMockConnection();
-    conn.forwardProcess = {
-      killed: false,
-      exitCode: 1,
-      signalCode: null,
-    } as any;
-    (conn.conn.exec as any).mockRejectedValue(new Error("timeout"));
-
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
+    const monitor = new ConnectionMonitor(conn, mockLogger);
     monitor.start();
 
     await triggerSleepAndProbe();
@@ -268,119 +142,46 @@ describe("ConnectionMonitor", () => {
     monitor.stop();
   });
 
-  it("does nothing when everything is alive", async () => {
+  it("marks dead when the ssh probe returns a non-zero exit", async () => {
     const conn = makeMockConnection();
-    const startSocksForward = vi.fn();
+    (conn.conn.exec as any).mockResolvedValue({ exitCode: 1 });
 
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward,
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
+    const monitor = new ConnectionMonitor(conn, mockLogger);
     monitor.start();
 
     await triggerSleepAndProbe();
 
-    expect(conn.dead).toBe(false);
-    expect(startSocksForward).not.toHaveBeenCalled();
+    expect(conn.dead).toBe(true);
     monitor.stop();
   });
 
-  it("does not mark dead when ownsServer is false and serverProcess is undefined", async () => {
+  it("stays alive when the ssh probe succeeds", async () => {
     const conn = makeMockConnection();
-    // Reusing another window's server: no local serverProcess handle.
-    conn.ownsServer = false;
-    conn.serverProcess = undefined;
-    // SSH and forward are alive.
-
-    const startSocksForward = vi.fn();
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward,
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
-    monitor.start();
-
-    await triggerSleepAndProbe();
-
-    expect(conn.dead).toBe(false);
-    expect(startSocksForward).not.toHaveBeenCalled();
-    monitor.stop();
-  });
-
-  it("restarts forward but stays alive when ownsServer is false and forward is dead", async () => {
-    const conn = makeMockConnection();
-    conn.ownsServer = false;
-    conn.serverProcess = undefined;
-    conn.forwardProcess = {
-      killed: false,
-      exitCode: 1,
-      signalCode: null,
-    } as any;
     (conn.conn.exec as any).mockResolvedValue({ exitCode: 0 });
 
-    const newForward = {
-      killed: false,
-      exitCode: null,
-      signalCode: null,
-      once: vi.fn(),
-    } as any;
-
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({ process: newForward, agentReady: Promise.resolve(false) }),
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
+    const monitor = new ConnectionMonitor(conn, mockLogger);
     monitor.start();
 
     await triggerSleepAndProbe();
 
-    // Forward restarted, connection NOT marked dead (we don't own the server).
     expect(conn.dead).toBe(false);
-    expect(conn.socksPort).toBe(2080);
-    expect(conn.forwardProcess).toBe(newForward);
     monitor.stop();
   });
 
   it("debounces rapid probes (no double-probe within MIN_PROBE_GAP)", async () => {
     const conn = makeMockConnection();
-    const startSocksForward = vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) });
+    const exec = vi.fn().mockResolvedValue({ exitCode: 0 });
+    (conn.conn as any).exec = exec;
 
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward,
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
+    const monitor = new ConnectionMonitor(conn, mockLogger);
     monitor.start();
 
-    // First sleep triggers a probe.
-    await triggerSleepAndProbe();
-    const callsAfterFirst = startSocksForward.mock.calls.length;
+    // Two probes with no clock advance between them: the second is within
+    // MIN_PROBE_GAP_MS and is skipped.
+    await (monitor as any).triggerProbe("a");
+    await (monitor as any).triggerProbe("b");
 
-    // Immediately trigger another sleep. The debounce window
-    // (MIN_PROBE_GAP_MS = 15s) hasn't elapsed, so the probe is skipped.
-    vi.advanceTimersByTime(5_000); // normal tick
-    vi.setSystemTime(new Date(Date.now() + 20_000)); // simulate sleep
-    vi.advanceTimersByTime(5_000); // fire -> sleep detected
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-
-    expect(startSocksForward.mock.calls.length).toBe(callsAfterFirst);
+    expect(exec.mock.calls.length).toBe(1);
     monitor.stop();
   });
 
@@ -389,15 +190,7 @@ describe("ConnectionMonitor", () => {
     // Make SSH exec slow - never resolves - so the probe stays in-flight.
     (conn.conn.exec as any).mockReturnValue(new Promise(() => {}));
 
-    const monitor = new ConnectionMonitor(
-      conn,
-      {
-        findFreePort: vi.fn().mockResolvedValue(2080),
-        startSocksForward: vi.fn().mockReturnValue({ process: {} as any, agentReady: Promise.resolve(false) }),
-        waitForPort: vi.fn().mockResolvedValue(undefined),
-      },
-      mockLogger,
-    );
+    const monitor = new ConnectionMonitor(conn, mockLogger);
     monitor.start();
 
     // Trigger first sleep - probe starts, stays in-flight (SSH never resolves).
@@ -412,9 +205,7 @@ describe("ConnectionMonitor", () => {
     vi.advanceTimersByTime(5_000);
     for (let i = 0; i < 5; i++) await Promise.resolve();
 
-    // Only one findFreePort call should have happened - the second probe
-    // was deduped to the in-flight one. With both processes alive, no
-    // restart happens; the key assertion is no crash and stable monitor.
+    // The second probe was deduped to the in-flight one; no crash, stable.
     expect(conn.dead).toBe(false);
     monitor.stop();
   });

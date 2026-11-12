@@ -4,16 +4,14 @@
  */
 
 /**
- * SSH connection via the system `ssh` binary.
+ * SSH connection interfaces.
  *
- * Shells out to `ssh` (same approach as MS Remote-SSH): all auth, keys,
- * agent, known_hosts, ProxyJump, etc. are handled by OpenSSH itself.
- *
- * Each exec spawns an ssh process. A persistent ssh process with
- * ControlMaster for connection reuse is a future phase 2 improvement.
+ * The persistent ssh session (`SshSession`, in `sshSession/connection.ts`)
+ * is the only production implementation. `ISshConnection` / `ExecResult` /
+ * `SshConnectOptions` are shared with the mock used in unit tests.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../common/logger";
 import type { AskpassServer } from "./askpassServer";
 
@@ -52,8 +50,9 @@ export interface SshConnectOptions {
 }
 
 /**
- * Interface for an SSH connection. Backed by either the system ssh binary
- * (SshConnection) or a persistent local server (SshSession).
+ * Interface for an SSH connection. Backed by the persistent local ssh
+ * session server (`SshSession`). The mock used in unit tests implements
+ * the same interface.
  */
 export interface ISshConnection {
   connect(): Promise<void>;
@@ -63,345 +62,35 @@ export interface ISshConnection {
   close(): Promise<void>;
   readonly isConnected: boolean;
   readonly remoteLabel: string;
-  /** Write a file to the remote. Optional; session connections implement this
- * instead of using spawnProcess + stdin for binary writes. */
-  putFile?(
+  /** Write a file to the remote via the Go transport. Requires the
+   *  transport. */
+  putFile(
     remotePath: string,
     content: Buffer,
     mode?: string,
     onProgress?: (sent: number, total: number) => void,
   ): Promise<ExecResult>;
+  /** Write a file over the ssh-session control shell (base64 + nonce exit
+   *  marker). The deliberate pre-transport path: the Go binary bootstrap ships
+   *  this way, since the transport isn't up yet. */
+  putFileViaControlShell(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+  ): Promise<ExecResult>;
   /** Stream a gzip-compressed tarball to the remote and extract it to `dest`
- *  with `--strip-components=strip`. Optional; session connections with a
- *  live Go transport implement this natively (no remote gzip/tar/busybox
- *  needed). Falls back to putFile + exec gzip|tar when no transport. */
-  extract?(
+   *  with `--strip-components=strip`. Requires the transport (no remote
+   *  gzip/tar/busybox needed). */
+  extract(
     dest: string,
     stripComponents: number,
     content: Buffer,
     onProgress?: (sent: number, total: number) => void,
   ): Promise<ExecResult>;
-  /** Actual SOCKS port (session only). Read after connect(). */
-  getSocksPort?(): number;
-  /** Inject the Go transport client (session only). When set, exec,
-   *  putFile, and execWithStdin route through the transport instead of the
-   *  ssh-session control shell. */
-  setTransportClient?(client: unknown): void;
-}
-
-/**
- * SSH connection backed by the system ssh binary.
- */
-export class SshConnection implements ISshConnection {
-  private readonly label: string;
-  private readonly sshPath: string;
-  private readonly configFile?: string;
-  private readonly extraArgs: string[];
-  private readonly logger?: Logger;
-  private readonly askpass?: AskpassServer;
-  private readonly askpassScript?: string;
-  private readonly askpassMain?: string;
-  private readonly nodePath?: string;
-  private readonly handshakeTimeoutMs: number;
-  private readonly tcpTimeoutSeconds: number;
-  private connected = false;
-
-  constructor(private readonly options: SshConnectOptions) {
-    this.label = options.host;
-    this.sshPath = options.sshPath ?? "ssh";
-    this.configFile = options.configFile;
-    this.extraArgs = options.extraArgs ?? [];
-    this.logger = options.logger;
-    this.askpass = options.askpass;
-    this.askpassScript = options.askpassScript;
-    this.askpassMain = options.askpassMain;
-    this.nodePath = options.nodePath;
-    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 30_000;
-    this.tcpTimeoutSeconds = options.tcpTimeoutSeconds ?? 15;
-  }
-
-  /**
-   * Build a connection from a destination + overrides.
-   * For subprocess mode, the destination is the host string.
-   */
-  static fromDestination(
-    dest: { host: string; user?: string; port?: number },
-    opts: Partial<SshConnectOptions> = {},
-  ): SshConnection {
-    let hostStr = dest.host;
-    if (dest.user) hostStr = `${dest.user}@${hostStr}`;
-    const extraArgs = [...(opts.extraArgs ?? [])];
-    if (dest.port) extraArgs.push("-p", String(dest.port));
-    return new SshConnection({ ...opts, host: hostStr, extraArgs });
-  }
-
-  get isConnected(): boolean {
-    return this.connected;
-  }
-
-  get remoteLabel(): string {
-    return this.label;
-  }
-
-  get handshakeTimeout(): number {
-    return this.handshakeTimeoutMs;
-  }
-
-  get tcpTimeout(): number {
-    return this.tcpTimeoutSeconds;
-  }
-
-  /** Floor for connect timeout when askpass is active, so password entry isn't rushed. */
-  private static readonly ASKPASS_CONNECT_FLOOR_MS = 120_000;
-
-  /**
-   * "Connect": verifies ssh exists and the host is reachable by running
-   * a trivial command. ssh verbose output is logged for diagnostics.
-   */
-  async connect(): Promise<void> {
-    if (this.connected) return;
-    this.logger?.info(`[ssh] connecting to ${this.label}...`);
-    const floored = this.askpass && this.handshakeTimeoutMs < SshConnection.ASKPASS_CONNECT_FLOOR_MS;
-    const timeout = this.askpass
-      ? Math.max(this.handshakeTimeoutMs, SshConnection.ASKPASS_CONNECT_FLOOR_MS)
-      : this.handshakeTimeoutMs;
-    const timeoutSeconds = Math.round(timeout / 1000);
-    this.logger?.info(
-      `[ssh] waiting up to ${timeoutSeconds}s for handshake` +
-        (floored ? " (askpass floor applied)" : ""),
-    );
-    try {
-      const result = await this.runExec("true", undefined, timeout, "connect");
-      if (result.exitCode !== 0) {
-        throw new Error(
-          `SSH connect to ${this.label} failed: ${result.stderr || `exit code ${result.exitCode}`}`,
-        );
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("timed out")) {
-        throw new Error(
-          `SSH connect to ${this.label} timed out after ${timeoutSeconds}s. Increase zygos.handshakeTimeout if your host uses 2FA.`,
-        );
-      }
-      throw err;
-    }
-    this.connected = true;
-    this.logger?.info(`[ssh] connected to ${this.label}`);
-  }
-
-  /** Exec a command on the remote. */
-  async exec(command: string, timeoutMs?: number, _quiet?: boolean): Promise<ExecResult> {
-    this.requireConnected();
-    return this.runExec(command, undefined, timeoutMs);
-  }
-
-  /** Exec a command and stream stdin data into it. */
-  async execWithStdin(command: string, stdinData: Buffer): Promise<ExecResult> {
-    this.requireConnected();
-    return this.runExec(command, stdinData);
-  }
-
-  /**
-   * Spawn ssh and run a command. Collects stdout/stderr.
-   *
-   * -v sends ssh debug output to stderr, which is logged.
-   * -T disables pseudo-terminal.
-   * BatchMode=yes prevents hanging on interactive prompts: fail fast instead.
-   *   Dropped when askpass is enabled (ssh prompts for passwords then).
-   */
-  private runExec(
-    command: string,
-    stdinData: Buffer | undefined,
-    timeoutMs?: number,
-    operation = "exec",
-  ): Promise<ExecResult> {
-    return new Promise<ExecResult>((resolve, reject) => {
-      const args = [
-        "-T", // no PTY
-        ...this.batchModeArgs(),
-        ...this.connectTimeoutArgs(),
-        ...this.configFileArgs(),
-        ...this.extraArgs,
-        this.options.host,
-        command,
-      ];
-
-      this.logger?.debug(`[ssh] ${command}`);
-
-      const child = spawn(this.sshPath, args, {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        env: this.sshEnv(),
-      });
-
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-      let settled = false;
-
-      child.stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
-      child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
-
-      if (stdinData) {
-        // Write in chunks with backpressure handling: a single write() of
-        // 188MB can stall the stream. Write 64KB at a time, wait for 'drain'
-        // when the internal buffer is full, then end stdin.
-        const CHUNK = 64 * 1024;
-        let offset = 0;
-        const writeNext = (): Promise<void> => {
-          return new Promise<void>((resolve, reject) => {
-            const writeChunk = () => {
-              while (offset < stdinData.length) {
-                const end = Math.min(offset + CHUNK, stdinData.length);
-                const chunk = stdinData.subarray(offset, end);
-                offset = end;
-                if (!child.stdin.write(chunk)) {
-                  child.stdin.once("drain", writeChunk);
-                  return;
-                }
-              }
-              child.stdin.end();
-              resolve();
-            };
-            writeChunk();
-            child.stdin.once("error", reject);
-            child.stdin.once("close", () => resolve());
-          });
-        };
-        void writeNext().catch(() => {});
-      } else {
-        child.stdin.end();
-      }
-
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      if (timeoutMs) {
-        timeoutHandle = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          this.logger?.error(`[ssh] ${operation} timed out after ${timeoutMs}ms`);
-          child.kill("SIGTERM");
-          reject(new Error(`SSH ${operation} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }
-
-      child.on("error", (err) => {
-        if (settled) return;
-        settled = true;
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        reject(new Error(`SSH spawn failed: ${err.message}. Is ssh in PATH?`));
-      });
-
-      child.on("close", (code, signal) => {
-        if (settled) return;
-        settled = true;
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        this.logger?.debug(`[ssh] exit=${code}`);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-          stderr: Buffer.concat(stderrChunks).toString("utf-8"),
-          exitCode: code,
-          signal: signal,
-        });
-      });
-    });
-  }
-
-  /**
-   * Spawn a long-running ssh process (e.g. port forward `-N`, or a server
-   * that stays in the foreground). Returns the raw ChildProcess for the
-   * caller to read stdout/stderr and manage the lifecycle.
-   */
-  spawnProcess(
-    command: string | undefined,
-    extraArgs: string[] = [],
-  ): ChildProcess {
-    const args = [
-      "-T",
-      ...this.batchModeArgs(),
-      ...this.connectTimeoutArgs(),
-      ...this.configFileArgs(),
-      ...this.extraArgs,
-      ...extraArgs,
-      this.options.host,
-    ];
-    if (command) args.push(command);
-
-    this.logger?.debug(
-      `[ssh] spawn: ${extraArgs.join(" ")} ${this.options.host} ${command ?? "(no command)"}`,
-    );
-
-    return spawn(this.sshPath, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      env: this.sshEnv(),
-    });
-  }
-
-  /** Build the ssh arg list for a one-shot exec (without spawning). */
-  buildExecArgs(command: string): string[] {
-    return [
-      "-T",
-      ...this.batchModeArgs(),
-      ...this.connectTimeoutArgs(),
-      ...this.configFileArgs(),
-      ...this.extraArgs,
-      this.options.host,
-      command,
-    ];
-  }
-
-  /**
-   * Returns ["-o", "BatchMode=yes"] when askpass is disabled, or [] when
-   * enabled (askpass requires ssh to prompt for passwords).
-   */
-  private batchModeArgs(): string[] {
-    return this.askpass ? [] : ["-o", "BatchMode=yes"];
-  }
-
-  /** -o ConnectTimeout=N when tcpTimeout > 0, otherwise nothing (system default). */
-  private connectTimeoutArgs(): string[] {
-    return this.tcpTimeoutSeconds > 0
-      ? ["-o", `ConnectTimeout=${this.tcpTimeoutSeconds}`]
-      : [];
-  }
-
-  /** -F <path> when a custom config file is set, otherwise nothing. */
-  private configFileArgs(): string[] {
-    return this.configFile ? ["-F", this.configFile] : [];
-  }
-
-  /**
-   * Build the environment for ssh. When askpass is enabled, sets
-   * SSH_ASKPASS, DISPLAY (required by OpenSSH to use SSH_ASKPASS), and
-   * the AERGIC_SSH_ASKPASS_* vars that the askpass scripts read.
-   */
-  private sshEnv(): NodeJS.ProcessEnv {
-    if (
-      !this.askpass ||
-      !this.askpassScript ||
-      !this.askpassMain ||
-      !this.nodePath
-    ) {
-      return undefined as unknown as NodeJS.ProcessEnv;
-    }
-    return {
-      ...process.env,
-      SSH_ASKPASS: this.askpassScript,
-      SSH_ASKPASS_REQUIRE: "force",
-      DISPLAY: this.options.host ? "zygos" : ":0", // any non-empty value works
-      AERGIC_SSH_ASKPASS_HANDLE: this.askpass.handle,
-      AERGIC_SSH_ASKPASS_TOKEN: this.askpass.token,
-      AERGIC_SSH_ASKPASS_NODE: this.nodePath,
-      AERGIC_SSH_ASKPASS_MAIN: this.askpassMain,
-    };
-  }
-
-  async close(): Promise<void> {
-    this.connected = false;
-  }
-
-  private requireConnected(): void {
-    if (!this.connected) {
-      throw new Error(`SSH connection to ${this.label} is not connected`);
-    }
-  }
+  /** Actual SOCKS port. Read after connect(). */
+  getSocksPort(): number;
+  /** Inject the Go transport client. When set, exec, putFile, and
+   *  execWithStdin route through the transport instead of the ssh-session
+   *  control shell. */
+  setTransportClient(client: unknown): void;
 }

@@ -21,7 +21,6 @@ import { registerServerDownloadPanel } from "./webviews/serverDownloadPanel";
 import { FORK_TEMPLATES } from "./platform/forkTemplates";
 import { initCache, disposeCache } from "./ssh/askpassCache";
 import { initSshSessionSecret, disposeSshSessionSecret, sshSessionSecretReady } from "./ssh/sshSessionSecret";
-import { sshSettings } from "./ssh/sshConfig";
 import { initVscodiumFeed } from "./remote/vscodiumFeed";
 import { configureDownloadCache, maybePruneCache } from "./remote/download";
 
@@ -176,20 +175,19 @@ export async function activate(
     rotationDays,
   );
 
-  // Initialize the ssh session secret when persistent session is enabled.
-  const { usePersistentSession } = sshSettings();
-  if (usePersistentSession) {
-    const sessionKeyRotationDays = vscode.workspace
-      .getConfiguration("zygos")
-      .get<number>("sessionKeyRotationDays", 7);
-    await initSshSessionSecret(
-      context.secrets,
-      logger,
-      "zygos.sshSession.masterkey",
-      sessionKeyRotationDays,
-    );
-    logger.info("[activate] persistent session enabled");
-  }
+  // Initialize the ssh session secret. The persistent session is the only
+  // path now; without the secret, resolve()/resolveExecServer() cannot build
+  // an SshSession and will surface a hard failure.
+  const sessionKeyRotationDays = vscode.workspace
+    .getConfiguration("zygos")
+    .get<number>("sessionKeyRotationDays", 7);
+  await initSshSessionSecret(
+    context.secrets,
+    logger,
+    "zygos.sshSession.masterkey",
+    sessionKeyRotationDays,
+  );
+  logger.info("[activate] persistent session enabled");
 
   // Initialize the VSCodium release feed used by the vscode-oss fork.
   // Bundled list ships in the VSIX; per-user cache is append-only.
@@ -212,14 +210,34 @@ export async function activate(
   void maybePruneCache();
 
   // Register the authority resolver.
+  let resolver: ReturnType<typeof registerResolver> | undefined;
   try {
-    registerResolver(context, logger);
+    resolver = registerResolver(context, logger);
     logger.info("[activate] resolver registered for ssh-remote");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`[activate] failed to register resolver: ${msg}`);
     return;
   }
+
+  // Manual escape hatch for stuck sessions: drop all refcounted
+  // sessions/transports so the next resolve() starts fresh. With the
+  // legacy fallback removed in 0.9.0, this is the workaround for
+  // half-open TCP cases heal-on-wake can't probe for.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "zygos.resetAllSshState",
+      async () => {
+        const confirm = await vscode.window.showWarningMessage(
+          "Reset all Zygos SSH state? Active transfers and exec sessions will be interrupted.",
+          { modal: true },
+          "Reset",
+        );
+        if (confirm !== "Reset") return;
+        resolver?.resetAllState();
+      },
+    ),
+  );
 
   logger.info(`Activated on ${platform.name}`);
 }

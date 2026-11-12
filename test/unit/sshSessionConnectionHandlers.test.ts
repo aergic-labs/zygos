@@ -199,16 +199,12 @@ describe("SshSession.exec", () => {
 });
 
 describe("SshSession.execWithStdin", () => {
-  it("base64-encodes stdin and pipes via /exec", async () => {
+  it("throws when no transport is set", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
-    const client = MockClient.last!
-    client.setResponse("base64 -d", { exitCode: 0 });
-    const data = Buffer.from("hello stdin");
-    await conn.execWithStdin("cat", data);
-    // The wrapped command should contain the base64 string.
-    expect(client.execCalls[0]).toContain(data.toString("base64"));
-    expect(client.execCalls[0]).toContain("base64 -d");
+    await expect(
+      conn.execWithStdin("cat", Buffer.from("hello stdin")),
+    ).rejects.toThrow("requires the Go transport");
     await conn.close();
   });
 
@@ -219,12 +215,12 @@ describe("SshSession.execWithStdin", () => {
 });
 
 describe("SshSession.putFile", () => {
-  it("delegates to client.putFile", async () => {
+  it("putFileViaControlShell delegates to client.putFile", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!
     const content = Buffer.from("file content");
-    await conn.putFile("/remote/path", content, "0644");
+    await conn.putFileViaControlShell("/remote/path", content, "0644");
     expect(client.putFileCalls.length).toBe(1);
     expect(client.putFileCalls[0].path).toBe("/remote/path");
     expect(client.putFileCalls[0].content).toEqual(content);
@@ -261,8 +257,13 @@ describe("SshSession transport routing", () => {
     return {
       putFileCalls: [] as { path: string; content: Buffer; mode?: string }[],
       execCalls: [] as { command: string; stdin: Buffer }[],
+      extractCalls: [] as { dest: string; strip: number; content: Buffer }[],
       putFile(path: string, content: Buffer, mode?: string) {
         this.putFileCalls.push({ path, content, mode });
+        return Promise.resolve();
+      },
+      extract(dest: string, strip: number, content: Buffer) {
+        this.extractCalls.push({ dest, strip, content });
         return Promise.resolve();
       },
       execWithStdin(command: string, stdin: Buffer) {
@@ -309,23 +310,55 @@ describe("SshSession transport routing", () => {
     await conn.close();
   });
 
-  it("putFile falls back to session client when no transport", async () => {
+  it("putFile throws when no transport is set", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
-    const client = MockClient.last!;
-    await conn.putFile("/path", Buffer.from("data"), "0644");
-    expect(client.putFileCalls.length).toBe(1);
+    await expect(
+      conn.putFile("/path", Buffer.from("data"), "0644"),
+    ).rejects.toThrow("requires the Go transport");
     await conn.close();
   });
 
-  it("execWithStdin falls back to base64 heredoc when no transport", async () => {
+  it("putFileViaControlShell writes via the session client", async () => {
     const conn = new SshSession(makeOptions(), sshSessionDeps);
     await conn.connect();
     const client = MockClient.last!;
-    client.setResponse("base64 -d", { exitCode: 0 });
-    const data = Buffer.from("fallback");
-    await conn.execWithStdin("cat", data);
-    expect(client.execCalls[0]).toContain(data.toString("base64"));
+    await conn.putFileViaControlShell("/path", Buffer.from("data"), "0644");
+    expect(client.putFileCalls.length).toBe(1);
+    expect(client.putFileCalls[0].path).toBe("/path");
+    await conn.close();
+  });
+
+  it("execWithStdin throws when no transport is set", async () => {
+    const conn = new SshSession(makeOptions(), sshSessionDeps);
+    await conn.connect();
+    await expect(
+      conn.execWithStdin("cat", Buffer.from("fallback")),
+    ).rejects.toThrow("requires the Go transport");
+    await conn.close();
+  });
+
+  it("extract throws when no transport is set", async () => {
+    const conn = new SshSession(makeOptions(), sshSessionDeps);
+    await conn.connect();
+    await expect(
+      conn.extract("/dest", 1, Buffer.from("tarball")),
+    ).rejects.toThrow("requires the Go transport");
+    await conn.close();
+  });
+
+  it("extract routes through the transport when set", async () => {
+    const conn = new SshSession(makeOptions(), sshSessionDeps);
+    await conn.connect();
+    const transport = makeMockTransportClient();
+    conn.setTransportClient(transport as any);
+    const content = Buffer.from("tarball");
+    const result = await conn.extract("/dest", 1, content);
+    expect(transport.extractCalls.length).toBe(1);
+    expect(transport.extractCalls[0].dest).toBe("/dest");
+    expect(transport.extractCalls[0].strip).toBe(1);
+    expect(transport.extractCalls[0].content).toEqual(content);
+    expect(result.exitCode).toBe(0);
     await conn.close();
   });
 });

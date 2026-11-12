@@ -5,7 +5,7 @@
 
 /**
  * Fake SshConnection for unit tests. Implements the same interface as
- * SshConnection but never spawns a real ssh process. Commands are matched
+ * SshSession but never spawns a real ssh process. Commands are matched
  * by substring against a configurable response map.
  *
  * Shared across test files to avoid duplicating mock boilerplate.
@@ -187,6 +187,22 @@ export class MockSshConnection implements ISshConnection {
     content: Buffer,
     mode?: string,
   ): Promise<ExecResult> {
+    return this.recordPutFile(remotePath, content, mode);
+  }
+
+  async putFileViaControlShell(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+  ): Promise<ExecResult> {
+    return this.recordPutFile(remotePath, content, mode);
+  }
+
+  private recordPutFile(
+    remotePath: string,
+    content: Buffer,
+    mode?: string,
+  ): ExecResult {
     this.putFileCalls.push({ path: remotePath, content, mode });
     // Allow tests to simulate a putFile failure (e.g. remote dir doesn't
     // exist, disk full, permission denied) by registering a failing
@@ -195,6 +211,18 @@ export class MockSshConnection implements ISshConnection {
     for (const [substr, result] of this.putFileResponses) {
       if (remotePath.includes(substr)) return result;
     }
+    return ok();
+  }
+
+  /** Extract call records for tests that assert on the extract path. */
+  extractCalls: { dest: string; strip: number; bytes: number }[] = [];
+  async extract(
+    dest: string,
+    stripComponents: number,
+    content: Buffer,
+    _onProgress?: (sent: number, total: number) => void,
+  ): Promise<ExecResult> {
+    this.extractCalls.push({ dest, strip: stripComponents, bytes: content.length });
     return ok();
   }
 

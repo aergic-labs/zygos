@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   writeConnectionTokenFile,
+  readConnectionTokenFile,
   removeConnectionTokenFile,
 } from "../../src/remote/connectionToken";
 import {
@@ -44,6 +45,39 @@ describe("writeConnectionTokenFile", () => {
         noopLogger as any,
       ),
     ).rejects.toThrow("Failed to write connection token");
+  });
+
+  it("masks the install hash in the log line", async () => {
+    const conn = new MockSshConnection();
+    await conn.connect();
+    const lines: string[] = [];
+    const logger = { ...noopLogger, info: (m: string) => lines.push(m) };
+    await writeConnectionTokenFile(
+      conn as any,
+      "/home/user",
+      "secret-token",
+      logger as any,
+      "/home/user/.kiro-server/bin/9b769672d19454658b99a5875a0db99f559c4c59",
+    );
+    expect(lines.some((l) => l.includes("conn-token-<hash>"))).toBe(true);
+    expect(lines.some((l) => l.includes("9b769672"))).toBe(false);
+  });
+});
+
+describe("readConnectionTokenFile", () => {
+  it("masks the install hash in the log line", async () => {
+    const conn = new MockSshConnection();
+    await conn.connect();
+    const lines: string[] = [];
+    const logger = { ...noopLogger, info: (m: string) => lines.push(m) };
+    await readConnectionTokenFile(
+      conn as any,
+      "/home/user",
+      logger as any,
+      "/home/user/.kiro-server/bin/9b769672d19454658b99a5875a0db99f559c4c59",
+    );
+    expect(lines.some((l) => l.includes("conn-token-<hash>"))).toBe(true);
+    expect(lines.some((l) => l.includes("9b769672"))).toBe(false);
   });
 });
 

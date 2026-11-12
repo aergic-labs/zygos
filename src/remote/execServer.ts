@@ -484,7 +484,7 @@ export class SshExecServer {
       // Session path: buffer chunks and flush via putFile (control shell
       // stdin is shared, so spawnProcess + cat can't stream per-file stdin).
       if (this.conn.putFile) {
-        const flush = (content: Buffer) => this.conn.putFile!(path, content);
+        const flush = (content: Buffer) => this.conn.putFile(path, content);
         const stream = new BufferingWriteStream(flush);
         return Promise.resolve({ stream, done: stream.done });
       }

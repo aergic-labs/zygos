@@ -487,9 +487,7 @@ export async function handlePutFile(
  * read. Serialized: one command at a time.
  *
  * Because stderr is merged into stdout, the returned `stderr` field is
- * always `""`. Error text appears in `stdout`. Callers that inspect
- * `stderr` for diagnostics will not see it on this path; use the fallback
- * pattern `stderr || stdout`.
+ * always `""`. Error text appears in `stdout`; callers should read `stdout`.
  */
 export async function runExec(
   state: ServerState,

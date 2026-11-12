@@ -9,9 +9,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 import {
   bootstrapBusybox,
-  probeHome,
-  probeArch,
-  isBootstrapped,
   probeRemote,
 } from "../../src/remote/busybox";
 import { MockSshConnection, ok, fail, noopLogger } from "../__mocks__/mockSshConnection";
@@ -105,65 +102,6 @@ describe("probeRemote", () => {
     // The command sent to ssh must be `sh -c '<probe script>'`, not the
     // raw POSIX script, so a fish login shell doesn't choke on `=`.
     expect(conn.calls[0]).toMatch(/^sh -c /);
-  });
-});
-
-describe("probeHome", () => {
-  it("returns HOME from printenv", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("printenv", ok("/home/user"));
-    const home = await probeHome(conn as any);
-    expect(home).toBe("/home/user");
-  });
-
-  it("throws when HOME is empty", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("printenv", ok(""));
-    await expect(probeHome(conn as any)).rejects.toThrow(/HOME is empty/);
-  });
-});
-
-describe("probeArch", () => {
-  it("detects x86_64", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("uname", ok("x86_64"));
-    const arch = await probeArch(conn as any);
-    expect(arch).toBe("x64");
-  });
-
-  it("detects aarch64", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("uname", ok("aarch64"));
-    const arch = await probeArch(conn as any);
-    expect(arch).toBe("arm64");
-  });
-
-  it("throws on unsupported arch", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("uname", ok("mips"));
-    await expect(probeArch(conn as any)).rejects.toThrow("Unsupported");
-  });
-
-  it("throws when uname fails", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("uname", fail("command not found"));
-    await expect(probeArch(conn as any)).rejects.toThrow("detect architecture");
-  });
-});
-
-describe("isBootstrapped", () => {
-  it("returns true when sh is executable", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("test -x", ok());
-    const result = await isBootstrapped(conn as any, "/home/user");
-    expect(result).toBe(true);
-  });
-
-  it("returns false when sh is not executable", async () => {
-    const conn = new MockSshConnection();
-    conn.setResponse("test -x", fail());
-    const result = await isBootstrapped(conn as any, "/home/user");
-    expect(result).toBe(false);
   });
 });
 

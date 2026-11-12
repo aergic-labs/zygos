@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -98,6 +98,11 @@
         "title": "Forget",
         "category": "Zygos Remote SSH",
         "icon": "$(x)"
+      },
+      {
+        "command": "zygos.resetAllSshState",
+        "title": "Reset All SSH State",
+        "category": "Zygos Remote SSH"
       }
     ],
     "views": {
@@ -139,6 +144,10 @@
         {
           "command": "zygos.showConflictInfo",
           "when": "zygos.conflict"
+        },
+        {
+          "command": "zygos.resetAllSshState",
+          "when": "!zygos.conflict"
         },
         {
           "command": "zygos.openTerminal",
@@ -320,9 +329,8 @@
         },
         "zygos.usePersistentSession": {
           "type": "boolean",
-          "default": true,
-          "description": "Reuse one ssh session per window across resolve and exec server, with a Go transport on the remote for file ops and streaming exec. Uncheck to open a fresh ssh connection per command. Restart required if changed.",
-          "order": 22
+          "default": false,
+          "markdownDeprecationMessage": "The persistent SSH session is always on; this setting has no effect. Right click and select \"reset setting\" or remove it from `settings.json`."
         },
         "zygos.sessionKeyRotationDays": {
           "type": "integer",
@@ -334,8 +342,7 @@
         "zygos.usePersistentConnection": {
           "type": "boolean",
           "default": false,
-          "markdownDeprecationMessage": "Renamed to `zygos.usePersistentSession`; this setting has no effect. Right click and select \"reset setting\" or remove it from `settings.json`.",
-          "order": 24
+          "markdownDeprecationMessage": "The persistent SSH session is always on; this setting has no effect. Right click and select \"reset setting\" or remove it from `settings.json`."
         }
       }
     }

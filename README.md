@@ -123,7 +123,7 @@ See `tools/busybox/PROVENANCE.md` for full details.
 <!-- BEGIN:persistent-session -->
 ## Persistent SSH session
 
-By default, Zygos keeps one SSH session per window open for the lifetime of the
+Zygos keeps one SSH session per window open for the lifetime of the
 remote connection and reuses it across every remote operation — resolving the
 authority, starting the server, running remote commands — instead of opening a
 fresh SSH connection per command. One ssh process per window means fewer auth
@@ -136,8 +136,9 @@ that used to spawn a shell each now stream over the existing session. The
 transport is detached and refcounted alongside the SSH session; reload reuses
 a running transport instead of orphaning it.
 
-If you run into a regression, uncheck `zygos.usePersistentSession` to fall
-back to one SSH connection per command. Restart required if changed.
+If a session gets stuck (for example, a half-open TCP connection after the
+machine sleeps), run **Zygos Remote SSH: Reset All SSH State**. It drops the
+cached sessions and transports so the next connect starts fresh.
 <!-- END:persistent-session -->
 
 <!-- BEGIN:configuration -->
@@ -158,7 +159,6 @@ back to one SSH connection per command. Restart required if changed.
 | `zygos.httpsProxy` | `""` | HTTPS proxy URL to forward to the remote server. |
 | `zygos.handshakeTimeout` | `30` | Total timeout in seconds for the complete connection sequence. |
 | `zygos.tcpTimeout` | `15` | Maximum time in seconds to wait for the initial TCP connection. 0 = system default. |
-| `zygos.usePersistentSession` | `true` | Reuse one ssh session per window across resolve and exec server, with a Go transport on the remote for file ops and streaming exec. Uncheck to open a fresh ssh connection per command. Restart required if changed. |
 | `zygos.sessionKeyRotationDays` | `7` | Days before the persistent connection master key rotates. 0 = never. |
 <!-- END:configuration -->
 

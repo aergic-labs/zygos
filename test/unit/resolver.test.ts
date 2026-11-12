@@ -223,9 +223,14 @@ function configureForSession(fake: MockSshConnection): void {
   fake.setResponse("conn-token", ok("a".repeat(32) + "\n"));
 }
 
-/** Make a resolver with a MockSshConnection factory and sshSessionDeps. */
+/** Make a resolver with a MockSshConnection factory and sshSessionDeps.
+ *  Captures opts.socksPort so the fake opens a real TCP listener
+ *  (waitForPort in onProbed needs it to succeed). */
 function makeSessionResolver(fake: MockSshConnection): SshRemoteResolver {
-  const factory: ConnectionFactory = () => fake as any;
+  const factory: ConnectionFactory = (_dest, opts) => {
+    (fake as any).socksPortFromOpts = opts?.socksPort;
+    return fake as any;
+  };
   return new SshRemoteResolver(
     noopLogger as any,
     path.join(__dirname, "..", ".."),
@@ -377,17 +382,44 @@ describe("SshRemoteResolver.resolveExecServer - error paths", () => {
   });
 });
 
-// --- resolveExecServer() happy path ---
+// --- Generic resolver behaviors (session path) ---
+//
+// These cover behaviors that aren't transport-specific: status bar
+// lifecycle, makeConnection dead-guard, connectionToken format,
+// workspaceState link-id persistence, resolveExecServer connection
+// storage, and dispose cleanup. They run on the session path since
+// that's the only production path now.
 
-describe("SshRemoteResolver.resolveExecServer - happy path", () => {
+describe("SshRemoteResolver generic behaviors (session path)", () => {
   let resolver: SshRemoteResolver;
   let fake: MockSshConnection;
 
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
+    resetStatusBarItems();
+    sessionSecretReady = true;
+    (ZygosTransport as any).instances.length = 0;
+    probeTransportAliveMock.mockReset();
+    probeTransportAliveMock.mockResolvedValue(false);
+    transportExecMock.mockReset();
+    transportExecMock.mockResolvedValue({
+      stdout: Buffer.from(""),
+      stderr: Buffer.from(""),
+      exitCode: 0,
+      signal: null,
+    });
+    transportServerStatusMock.mockReset();
+    transportServerStatusMock.mockResolvedValue({
+      reusePort: 9999,
+      pid: 0,
+      alive: false,
+    });
+    transportWaitForFileMock.mockReset();
+    transportWaitForFileMock.mockResolvedValue(Buffer.from("9876\n"));
     fake = new MockSshConnection();
-    resolver = makeResolver(fake);
+    configureForSession(fake);
+    resolver = makeSessionResolver(fake);
   });
 
   afterEach(() => {
@@ -395,55 +427,7 @@ describe("SshRemoteResolver.resolveExecServer - happy path", () => {
     resolver.dispose();
   });
 
-  it("returns an exec server object and stores the connection", async () => {
-    const auth = authority("10.0.0.42");
-    const result = await resolver.resolveExecServer(auth, {
-      resolveAttempt: 1,
-    });
-    expect(result).toBeDefined();
-    // The connection should be stored under authority:execServer.
-    const connections = (resolver as any).connections as Map<string, unknown>;
-    expect(connections.has(`${auth}:execServer`)).toBe(true);
-  });
-
-  it("creates a SOCKS forward that listens on a real port", async () => {
-    await resolver.resolveExecServer(authority("host1"), {
-      resolveAttempt: 1,
-    });
-    // The fake opened a real TCP listener for -D.
-    expect(fake.socksServers.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("keeps -N on the exec-server forward (no agent role)", async () => {
-    await resolver.resolveExecServer(authority("host2"), {
-      resolveAttempt: 1,
-    });
-    const fwd = fake.spawns.find((s) => s.args.includes("-D"))!;
-    expect(fwd.command).toBeUndefined();
-    expect(fwd.args).toContain("-N");
-  });
-});
-
-// --- resolve() happy path ---
-
-describe("SshRemoteResolver.resolve - happy path", () => {
-  let resolver: SshRemoteResolver;
-  let fake: MockSshConnection;
-
-  beforeEach(() => {
-    resetConfig();
-    setConfig("zygos.askpass", false);
-    fake = new MockSshConnection();
-    configureForResolve(fake);
-    resolver = makeResolver(fake);
-  });
-
-  afterEach(() => {
-    fake.stopSocksListeners();
-    resolver.dispose();
-  });
-
-  it("resolves and returns makeConnection + connectionToken", async () => {
+  it("resolve() returns makeConnection + a 32-char connectionToken", async () => {
     const auth = authority("10.0.0.99");
     const result = await resolver.resolve(auth, { resolveAttempt: 1 });
     expect(result.makeConnection).toBeTypeOf("function");
@@ -451,110 +435,107 @@ describe("SshRemoteResolver.resolve - happy path", () => {
     expect(result.connectionToken).toHaveLength(32);
   });
 
-  it("stores the connection for cleanup on reconnect", async () => {
-    const auth = authority("10.0.0.100");
-    await resolver.resolve(auth, { resolveAttempt: 1 });
-    const connections = (resolver as any).connections as Map<string, unknown>;
-    expect(connections.has(auth)).toBe(true);
-  });
-
-  it("creates a status bar item and disposes it after resolve", async () => {
-    const auth = authority("10.0.0.101");
-    await resolver.resolve(auth, { resolveAttempt: 1 });
-    // At least one status bar item was created and disposed.
+  it("resolve() creates a status bar item and disposes it after resolve", async () => {
+    await resolver.resolve(authority("10.0.0.101"), { resolveAttempt: 1 });
     expect(statusBarItemsRef.length).toBeGreaterThanOrEqual(1);
     const last = statusBarItemsRef[statusBarItemsRef.length - 1];
     expect(last.disposed).toBe(true);
   });
 
-  it("runs the agent command on the forward instead of -N", async () => {
-    await resolver.resolve(authority("10.0.0.103"), { resolveAttempt: 1 });
-    const fwd = fake.spawns.find((s) => s.args.includes("-D"))!;
-    expect(fwd.command).toMatch(/ZYAGENT-[0-9a-f]+/);
-    expect(fwd.args).not.toContain("-N");
-  });
-
-  it("sets extensionHostEnv SSH_AUTH_SOCK to the window's link", async () => {
-    const result = await resolver.resolve(authority("10.0.0.104"), {
-      resolveAttempt: 1,
-    });
-    expect(result.extensionHostEnv?.SSH_AUTH_SOCK).toMatch(
-      /^\/home\/testuser\/\.ssh-remote\/agent-[0-9a-f]{16}$/,
-    );
-  });
-
-  it("does not set extensionHostEnv without a forwarded agent", async () => {
-    fake.setAgentReport("");
-    const result = await resolver.resolve(authority("10.0.0.105"), {
-      resolveAttempt: 1,
-    });
-    expect(result.extensionHostEnv).toBeUndefined();
-  });
-
-  it("keeps the same link across re-resolves and reuses", async () => {
-    const auth = authority("10.0.0.106");
-    const first = await resolver.resolve(auth, { resolveAttempt: 1 });
-    // Reuse path (connection still healthy).
-    const reused = await resolver.resolve(auth, { resolveAttempt: 1 });
-    expect(reused.extensionHostEnv).toEqual(first.extensionHostEnv);
-    // Fresh resolve after the connection dies.
+  it("makeConnection throws when the flow is dead", async () => {
+    const auth = authority("10.0.0.102");
+    const result = await resolver.resolve(auth, { resolveAttempt: 1 });
     const connections = (resolver as any).connections as Map<string, any>;
     connections.get(auth)!.dead = true;
-    const again = await resolver.resolve(auth, { resolveAttempt: 2 });
-    expect(again.extensionHostEnv).toEqual(first.extensionHostEnv);
+    await expect(result.makeConnection()).rejects.toThrow("dead");
   });
 
-  it("persists the link id in workspaceState", async () => {
+  it("persists the link id in workspaceState across reloads", async () => {
     const store = new Map<string, unknown>();
     const memento = {
       get: (k: string) => store.get(k),
       update: async (k: string, v: unknown) => void store.set(k, v),
     };
     const auth = authority("10.0.0.107");
+    const fake1 = new MockSshConnection();
+    configureForSession(fake1);
+    const factory1: ConnectionFactory = (_dest, opts) => {
+      (fake1 as any).socksPortFromOpts = opts?.socksPort;
+      return fake1 as any;
+    };
     const r1 = new SshRemoteResolver(
       noopLogger as any,
-      "/ext/path",
-      () => fake as any,
+      path.join(__dirname, "..", ".."),
+      factory1,
       memento as any,
+      SESSION_DEPS as any,
     );
     const first = await r1.resolve(auth, { resolveAttempt: 1 });
     r1.dispose();
-    fake.stopSocksListeners();
+    fake1.stopSocksListeners();
 
-    // A new resolver (window reload) reads the same id.
+    // A new resolver (window reload) reads the same id from workspaceState.
+    const fake2 = new MockSshConnection();
+    configureForSession(fake2);
+    const factory2: ConnectionFactory = (_dest, opts) => {
+      (fake2 as any).socksPortFromOpts = opts?.socksPort;
+      return fake2 as any;
+    };
     const r2 = new SshRemoteResolver(
       noopLogger as any,
-      "/ext/path",
-      () => fake as any,
+      path.join(__dirname, "..", ".."),
+      factory2,
       memento as any,
+      SESSION_DEPS as any,
     );
     const second = await r2.resolve(auth, { resolveAttempt: 1 });
     r2.dispose();
+    fake2.stopSocksListeners();
     expect(second.extensionHostEnv).toEqual(first.extensionHostEnv);
   });
 
-  it("makeConnection throws when connection is dead", async () => {
-    const auth = authority("10.0.0.102");
-    const result = await resolver.resolve(auth, { resolveAttempt: 1 });
-    // Mark the connection dead.
-    const connections = (resolver as any).connections as Map<string, any>;
-    connections.get(auth)!.dead = true;
-    await expect(result.makeConnection()).rejects.toThrow("dead");
+  it("resolveExecServer() stores the connection under the execServer key", async () => {
+    const auth = authority("10.0.0.42");
+    const result = await resolver.resolveExecServer(auth, {
+      resolveAttempt: 1,
+    });
+    expect(result).toBeDefined();
+    const connections = (resolver as any).connections as Map<string, unknown>;
+    expect(connections.has(`${auth}:execServer`)).toBe(true);
   });
 });
 
-// --- dispose() ---
+// --- dispose() (session path) ---
 
-describe("SshRemoteResolver.dispose", () => {
+describe("SshRemoteResolver.dispose (session path)", () => {
   let resolver: SshRemoteResolver;
   let fake: MockSshConnection;
 
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
+    sessionSecretReady = true;
+    (ZygosTransport as any).instances.length = 0;
+    probeTransportAliveMock.mockReset();
+    probeTransportAliveMock.mockResolvedValue(false);
+    transportExecMock.mockReset();
+    transportExecMock.mockResolvedValue({
+      stdout: Buffer.from(""),
+      stderr: Buffer.from(""),
+      exitCode: 0,
+      signal: null,
+    });
+    transportServerStatusMock.mockReset();
+    transportServerStatusMock.mockResolvedValue({
+      reusePort: 9999,
+      pid: 0,
+      alive: false,
+    });
+    transportWaitForFileMock.mockReset();
+    transportWaitForFileMock.mockResolvedValue(Buffer.from("9876\n"));
     fake = new MockSshConnection();
-    configureForResolve(fake, 5555);
-    resolver = makeResolver(fake);
+    configureForSession(fake);
+    resolver = makeSessionResolver(fake);
   });
 
   afterEach(() => {
@@ -578,9 +559,11 @@ describe("SshRemoteResolver.dispose", () => {
     await resolver.resolve(authority("h1"), { resolveAttempt: 1 });
     // Need a fresh fake for the second resolve (different SOCKS port).
     const fake2 = new MockSshConnection();
-    configureForResolve(fake2, 7777);
-    // Replace the factory to use fake2.
-    (resolver as any).connectionFactory = () => fake2 as any;
+    configureForSession(fake2);
+    (resolver as any).connectionFactory = (_dest: any, opts: any) => {
+      (fake2 as any).socksPortFromOpts = opts?.socksPort;
+      return fake2 as any;
+    };
     await resolver.resolve(authority("h2"), { resolveAttempt: 1 });
 
     const connections = (resolver as any).connections as Map<string, unknown>;
@@ -601,7 +584,6 @@ describe("SshRemoteResolver shared transport (session path)", () => {
   beforeEach(() => {
     resetConfig();
     setConfig("zygos.askpass", false);
-    setConfig("zygos.usePersistentSession", true);
     sessionSecretReady = true;
     factoryCalls = 0;
     (ZygosTransport as any).instances.length = 0;
@@ -1012,58 +994,6 @@ describe("SshRemoteResolver shared transport (session path)", () => {
     await expect(
       resolver.resolve(auth, { resolveAttempt: 1 }),
     ).rejects.toThrow(/tunnel-meta.json has an invalid token/);
-  });
-});
-
-// --- Non-session path: no shared transport ---
-
-describe("SshRemoteResolver non-session path (no sharing)", () => {
-  let resolver: SshRemoteResolver;
-  let fake: MockSshConnection;
-  let factoryCalls: number;
-
-  beforeEach(() => {
-    resetConfig();
-    setConfig("zygos.askpass", false);
-    setConfig("zygos.usePersistentSession", false);
-    // usePersistentSession unchecked (opt-out); sessionSecretReady stays false.
-    factoryCalls = 0;
-    (ZygosTransport as any).instances.length = 0;
-    fake = new MockSshConnection();
-    configureForResolve(fake);
-    const factory: ConnectionFactory = () => {
-      factoryCalls++;
-      return fake as any;
-    };
-    resolver = new SshRemoteResolver(
-      noopLogger as any,
-      "/ext/path",
-      factory,
-    );
-  });
-
-  afterEach(() => {
-    fake.stopSocksListeners();
-    resolver.dispose();
-  });
-
-  it("resolve() and resolveExecServer() use separate connections (no transport map entry)", async () => {
-    const auth = authority("nosession-host");
-    await resolver.resolve(auth, { resolveAttempt: 1 });
-    await resolver.resolveExecServer(auth, { resolveAttempt: 1 });
-
-    const transports = (resolver as any).transports as Map<string, any>;
-    const connections = (resolver as any).connections as Map<string, any>;
-
-    // Non-session path: no shared transport registered.
-    expect(transports.size).toBe(0);
-    // Both flows still registered.
-    expect(connections.has(auth)).toBe(true);
-    expect(connections.has(`${auth}:execServer`)).toBe(true);
-    // Factory called twice (one conn per flow).
-    expect(factoryCalls).toBe(2);
-    // No ZygosTransport constructed (non-session doesn't start the Go transport).
-    expect((ZygosTransport as any).instances.length).toBe(0);
   });
 });
 

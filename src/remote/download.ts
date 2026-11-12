@@ -246,7 +246,11 @@ function fetchOnce(
         res.on("end", () => {
           if (settled) return;
           settled = true;
-          if (onProgress) onProgress(received, total ?? received);
+          // Only emit a final report if the last data chunk didn't already
+          // report at this byte count (avoids a duplicate 100% line).
+          if (onProgress && received !== lastReportedBytes) {
+            onProgress(received, total ?? received);
+          }
           resolve(Buffer.concat(chunks));
         });
         res.on("error", fail);

@@ -34,9 +34,11 @@ export async function writeConnectionTokenFile(
 ): Promise<string> {
   const suffix = installPath ? `-${path.basename(installPath)}` : "";
   const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${suffix}`;
+  const logSuffix = installPath ? "-<hash>" : "";
+  const logTokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${logSuffix}`;
   // umask 077 -> file is created mode 600 regardless of the remote's default.
   const cmd = `mkdir -p ${shellQuote(`${home}/${REMOTE_DIR_NAME}`)} && umask 077 && cat > ${shellQuote(tokenFile)}`;
-  logger.info(`[conn-token] writing token file at ${tokenFile}`);
+  logger.info(`[conn-token] writing token file at ${logTokenFile}`);
   const result = await bbExecWithStdin(
     conn,
     home,
@@ -63,7 +65,9 @@ export async function readConnectionTokenFile(
 ): Promise<string | undefined> {
   const suffix = installPath ? `-${path.basename(installPath)}` : "";
   const tokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${suffix}`;
-  logger.info(`[conn-token] reading token file at ${tokenFile}`);
+  const logSuffix = installPath ? "-<hash>" : "";
+  const logTokenFile = `${home}/${REMOTE_DIR_NAME}/conn-token${logSuffix}`;
+  logger.info(`[conn-token] reading token file at ${logTokenFile}`);
   const result = await bbExec(
     conn,
     home,

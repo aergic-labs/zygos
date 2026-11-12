@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.0]
+
+### Added
+
+- `Zygos: Reset All SSH State` command drops all refcounted sessions/transports so the next `resolve()` starts fresh. Workaround for stuck sessions (half-open TCP) that heal-on-wake can't probe for. Confirms before acting.
+
+### Changed
+
+- The persistent SSH session is now the only path; the legacy per-command ssh fallback is removed. One ssh session + one Go transport per authority, refcounted across `resolve()` and `resolveExecServer()` and reused on reload.
+
+### Fixed
+
+- The connection-token file path in resolver logs now masks the server install hash suffix.
+
+### Removed
+
+- The legacy non-session ssh path: `SshConnection.fromDestination` per-flow, standalone transport per-flow, the `acquireLockAndProbeZombie`/`finalizeServerStart`/`removeServerMetadata`/`releaseResolveLock` bbExec fallbacks, the `startServer` non-session branch, the control-shell ready-file poll, the `gzip -dc | tar -xC` extract fallbacks in `install.ts`, and the `forwardProcess` exit-listener dead-guard.
+- `zygos.usePersistentSession` and `zygos.usePersistentConnection` are deprecated no-ops (kept in the schema so multi-version jumpers get a deprecation message instead of an unknown-setting silence).
+
 ## [0.8.1]
 
 ### Fixed

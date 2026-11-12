@@ -28,16 +28,12 @@ vi.mock("../../src/platform", () => ({
 }));
 
 import { SshRemoteResolver } from "../../src/resolver/index";
-import { SshConnection } from "../../src/ssh/connection";
 import { SshSession } from "../../src/ssh/sshSession/connection";
 import {
   initSshSessionSecret,
   disposeSshSessionSecret,
 } from "../../src/ssh/sshSessionSecret";
-import {
-  setConfig,
-  resetConfig,
-} from "../__mocks__/vscode";
+import { resetConfig } from "../__mocks__/vscode";
 
 const noopLogger = {
   info: () => {},
@@ -55,7 +51,6 @@ const sshSessionDeps = {
 
 describe("defaultConnectionFactory", () => {
   beforeEach(async () => {
-    resetConfig();
     await initSshSessionSecret(
       { get: async () => undefined, store: async () => {}, delete: async () => {} } as any,
       noopLogger as any,
@@ -68,23 +63,7 @@ describe("defaultConnectionFactory", () => {
     resetConfig();
   });
 
-  it("returns SshConnection when usePersistentSession is unchecked", () => {
-    setConfig("zygos.usePersistentSession", false);
-    const resolver = new SshRemoteResolver(
-      noopLogger as any,
-      "/ext",
-      undefined,
-      undefined,
-      sshSessionDeps,
-    );
-    const factory = (resolver as any).connectionFactory;
-    const conn = factory({ host: "example.com" }, {});
-    expect(conn).toBeInstanceOf(SshConnection);
-    expect(conn).not.toBeInstanceOf(SshSession);
-  });
-
-  it("returns SshSession when usePersistentSession is checked and secret is ready", () => {
-    setConfig("zygos.usePersistentSession", true);
+  it("returns SshSession when deps and secret are ready", () => {
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -97,8 +76,7 @@ describe("defaultConnectionFactory", () => {
     expect(conn).toBeInstanceOf(SshSession);
   });
 
-  it("falls back to SshConnection when usePersistentSession is checked but sshSessionDeps is missing", () => {
-    setConfig("zygos.usePersistentSession", true);
+  it("throws when sshSessionDeps is missing", () => {
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -107,14 +85,13 @@ describe("defaultConnectionFactory", () => {
       undefined,
     );
     const factory = (resolver as any).connectionFactory;
-    const conn = factory({ host: "example.com" }, {});
-    expect(conn).toBeInstanceOf(SshConnection);
-    expect(conn).not.toBeInstanceOf(SshSession);
+    expect(() => factory({ host: "example.com" }, {})).toThrow(
+      /sshSessionDeps not initialized/,
+    );
   });
 
-  it("falls back to SshConnection when usePersistentSession is checked but secret is not initialized", () => {
+  it("throws when the session secret is not initialized", () => {
     disposeSshSessionSecret();
-    setConfig("zygos.usePersistentSession", true);
     const resolver = new SshRemoteResolver(
       noopLogger as any,
       "/ext",
@@ -123,8 +100,8 @@ describe("defaultConnectionFactory", () => {
       sshSessionDeps,
     );
     const factory = (resolver as any).connectionFactory;
-    const conn = factory({ host: "example.com" }, {});
-    expect(conn).toBeInstanceOf(SshConnection);
-    expect(conn).not.toBeInstanceOf(SshSession);
+    expect(() => factory({ host: "example.com" }, {})).toThrow(
+      /SSH session secret not initialized/,
+    );
   });
 });

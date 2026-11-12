@@ -58,44 +58,10 @@ export function agentLinkPath(home: string, id: string): string {
 }
 
 /**
- * Remote command for the SOCKS forward when it owns the agent socket.
- *
- * sshd creates a forwarded agent socket per session and removes it when the
- * session ends, so the symlink must point at a long-lived session's socket.
- * This command repoints the window's symlink at its own $SSH_AUTH_SOCK,
- * reports the result after a nonce marker (same protocol as probeRemote, so
- * shell-init output can't corrupt it), then stays alive with MS Remote-SSH's
- * keep-alive loop. The periodic write lets sshd notice a dead link and tear
- * the session down.
- *
- * Runs under the vendored busybox sh with its tools on PATH (this process
- * only; the server never inherits it). Static script, values as positional
- * args, no single quotes inside, so the user's login shell (e.g. fish) only
- * sees single-quoted args.
- */
-export function agentForwardCommand(
-  home: string,
-  link: string,
-): { command: string; marker: string } {
-  const marker = `ZYAGENT-${crypto.randomBytes(8).toString("hex")}`;
-  const script =
-    `PATH="$2:$PATH"; export PATH; ` +
-    `s=; if [ -n "$SSH_AUTH_SOCK" ] && ln -f -s "$SSH_AUTH_SOCK" "$1"; then s=yes; fi; ` +
-    `printf "%s\n" "$3" "$s"; ` +
-    `while :; do sleep 180; printf " "; done`;
-  return {
-    command: `${remoteShPath(home)} -c ${shellQuote(script)} sh ${shellQuote(link)} ${shellQuote(remoteToolsDir(home))} ${shellQuote(marker)}`,
-    marker,
-  };
-}
-
-/**
- * One-shot agent forward for the ssh session path. Same repoint +
- * marker as agentForwardCommand, minus the keep-alive loop: the
- * session's control shell already keeps the ssh session (and the
- * forwarded agent socket) alive. Runs as a foreground exec; stdout is
- * the marker line + yes/empty line, parseable with
- * parseAgentForwardReady.
+ * One-shot agent forward for the ssh session path. Repoints the window's
+ * symlink at its own $SSH_AUTH_SOCK and reports the result after a nonce
+ * marker. Runs as a foreground exec; stdout is the marker line + yes/empty
+ * line, parseable with parseAgentForwardReady.
  */
 export function agentForwardCommandOneshot(
   home: string,
@@ -113,10 +79,10 @@ export function agentForwardCommandOneshot(
 }
 
 /**
- * Parse agentForwardCommand output accumulated so far. Returns undefined
- * until the marker line and the line after it are complete, then whether
- * the symlink now points at a live forwarded agent. Anything before the
- * marker (shell-init noise) is ignored.
+ * Parse agent-forward output accumulated so far. Returns undefined until
+ * the marker line and the line after it are complete, then whether the
+ * symlink now points at a live forwarded agent. Anything before the marker
+ * (shell-init noise) is ignored.
  */
 export function parseAgentForwardReady(
   stdout: string,
@@ -182,8 +148,7 @@ export interface RemoteProbe {
 
 /**
  * Single-call probe: HOME, arch, busybox presence, and whether the server
- * is already installed for the given commit. Replaces the prior 2-4 call
- * sequence (probeHome + probeArch + isBootstrapped + check install).
+ * is already installed for the given commit.
  *
  * Output protocol: a per-invocation nonce marker line, then one field per
  * line (home, arch, busybox, installed). The parser anchors on the exact
@@ -247,25 +212,6 @@ export async function probeRemote(
   };
 }
 
-/** Detect $HOME on the remote. Throws if unset (security: /tmp is shared). */
-export async function probeHome(conn: ISshConnection): Promise<string> {
-  const result = await conn.exec("printenv HOME");
-  const home = result.stdout.trim();
-  if (!home) {
-    throw new Error("Remote HOME is empty; refusing to install into /tmp");
-  }
-  return home;
-}
-
-/** Detect architecture via uname -m. Maps to x64/arm64. */
-export async function probeArch(conn: ISshConnection): Promise<string> {
-  const result = await conn.exec("uname -m");
-  if (result.exitCode !== 0) {
-    throw new Error(`Failed to detect architecture: ${result.stderr}`);
-  }
-  return normalizeArch(result.stdout);
-}
-
 /** Map uname -m output to our arch identifier. */
 export function normalizeArch(unameArch: string): string {
   const trimmed = unameArch.trim();
@@ -278,16 +224,6 @@ export function normalizeArch(unameArch: string): string {
     default:
       throw new Error(`Unsupported remote architecture: "${trimmed}"`);
   }
-}
-
-/** Check whether busybox is already bootstrapped on the remote. */
-export async function isBootstrapped(
-  conn: ISshConnection,
-  home: string,
-): Promise<boolean> {
-  const sh = remoteShPath(home);
-  const result = await conn.exec(`test -x ${shellQuote(sh)}`);
-  return result.exitCode === 0;
 }
 
 // --- Bootstrap phase (cat, chmod, mkdir only) ---

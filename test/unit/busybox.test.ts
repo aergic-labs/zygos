@@ -14,7 +14,6 @@ import {
   shellQuote,
   normalizeArch,
   agentLinkPath,
-  agentForwardCommand,
   parseAgentForwardReady,
 } from "../../src/remote/busybox";
 
@@ -23,27 +22,6 @@ describe("agentLinkPath", () => {
     expect(agentLinkPath("/home/user", "0123456789abcdef")).toBe(
       "/home/user/.ssh-remote/agent-0123456789abcdef",
     );
-  });
-});
-
-describe("agentForwardCommand", () => {
-  it("runs a static script under busybox sh with values as positional args", () => {
-    const link = "/home/user/.ssh-remote/agent-x";
-    const { command, marker } = agentForwardCommand("/home/user", link);
-    expect(marker).toMatch(/^ZYAGENT-[0-9a-f]{16}$/);
-    expect(command.startsWith("/home/user/.ssh-remote/bin/sh -c '")).toBe(true);
-    expect(command.endsWith(
-      ` sh ${shellQuote(link)} ${shellQuote("/home/user/.ssh-remote/bin")} ${shellQuote(marker)}`,
-    )).toBe(true);
-    // Script contains no single quotes, so shellQuote needs no escaping.
-    expect(command).not.toContain("'\\''");
-    expect(command).toContain("while :; do sleep 180;");
-  });
-
-  it("uses a fresh marker per invocation", () => {
-    const a = agentForwardCommand("/h", "/h/l").marker;
-    const b = agentForwardCommand("/h", "/h/l").marker;
-    expect(a).not.toBe(b);
   });
 });
 
