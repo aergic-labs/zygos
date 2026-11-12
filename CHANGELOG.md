@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.1]
+
+### Fixed
+
+- The REH server no longer inherits a busybox-first PATH. Restores #5, which regressed in 0.8.0.
+
 ## [0.9.0]
 
 ### Added

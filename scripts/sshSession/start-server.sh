@@ -2,13 +2,20 @@
 # Backgrounds the IDE server, waits for it to print its listening port,
 # writes the port atomically to a ready file. Run detached.
 #
-# Args: $1 = tools dir (prepended to PATH), $2 = start command,
-#       $3 = log file, $4 = ready file
+# Args: $1 = tools dir (prepended to PATH for this script's own commands),
+#       $2 = start command, $3 = log file, $4 = ready file
 # Proxy env is inherited from the caller.
 
-export PATH="$1:$PATH"
-# nohup so the server survives when this script exits.
+# nohup so the server survives when this script exits. Launched before the
+# PATH prepend below so the server inherits the caller's PATH, not our
+# busybox polyfill: busybox applets shadow system coreutils in the server
+# and the terminals/tasks it parents (zygos issue #5: BusyBox `readlink`
+# lacks `-e` and clobbers coreutils `readlink -e`).
 nohup sh -c "$2" > "$3" 2>&1 &
+
+# Prepend the tools dir for this script's own commands (grep, tail, sleep,
+# mv) in the poll loop below.
+export PATH="$1:$PATH"
 
 i=0
 while [ "$i" -lt 60 ]; do
