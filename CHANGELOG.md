@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.2]
+
+### Added
+
+- `ExecServer.connectUnix(path)` exposes the transport's unix-socket connect (op 13) to child resolvers.
+
 ## [0.9.1]
 
 ### Fixed

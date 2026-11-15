@@ -11,6 +11,8 @@
  * Shared across test files to avoid duplicating mock boilerplate.
  */
 
+/// <reference types="node" />
+
 import { EventEmitter } from "node:events";
 import * as net from "node:net";
 import type { ExecResult, ISshConnection, SshConnectOptions } from "../../src/ssh/connection";

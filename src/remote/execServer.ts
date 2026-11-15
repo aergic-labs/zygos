@@ -351,6 +351,31 @@ export class SshExecServer {
     }
   }
 
+  /** Connect to a unix socket on the remote via the transport. */
+  async connectUnix(
+    path: string,
+  ): Promise<{ stream: any; done: Promise<void> }> {
+    if (!this.transportClient) {
+      throw new Error("Transport not available for connectUnix");
+    }
+    this.logger.info(`[execServer] connectUnix ${path}`);
+    try {
+      const socket = await this.transportClient.connectUnix(path);
+      const passing = wrapSocket(socket);
+      const stream = new TcpStream(passing);
+      const done = new Promise<void>((resolve) => {
+        passing.onDidClose(() => resolve());
+      });
+      this.logger.info(`[execServer] connectUnix ${path} connected`);
+      return { stream, done };
+    } catch (err) {
+      this.logger.info(
+        `[execServer] connectUnix ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+  }
+
   /** File system operations backed by SSH exec. */
   readonly fs = {
     stat: async (path: string): Promise<FileStat> => {

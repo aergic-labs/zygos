@@ -3,6 +3,8 @@
  * server is spawned.
  */
 
+/// <reference types="node" />
+
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SshSession } from "../../src/ssh/sshSession/connection";
 import type { SshConnectOptions } from "../../src/ssh/connection";

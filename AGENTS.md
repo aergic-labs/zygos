@@ -32,6 +32,14 @@ constraint or the why. Then stop. One line if possible, multiple lines only
 when the why genuinely needs more. Write like a senior engineer's PR comments,
 not like a chatbot explaining its work.
 
+## Plan Execution
+
+When executing a plan documented in a Markdown file, read the plan
+first and obey its `Guardrails` section. Those
+constraints are mandatory. If one conflicts with another requirement
+or makes the plan infeasible, stop and explain before proceeding. Do
+not silently waive, reinterpret, or work around a constraint.
+
 ## Shell: detect before assuming
 
 The shell environment is **configurable** and may not be what you expect.
