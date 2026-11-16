@@ -35,7 +35,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 
 import type { Logger } from "../common/logger";
-import { type ISshConnection, type SshConnectOptions } from "../ssh/connection";
+import { type ISshConnection, type SshConnectOptions, type ExecResult } from "../ssh/connection";
 import { sshSettings } from "../ssh/sshConfig";
 import { SshSession } from "../ssh/sshSession/connection";
 import { sshSessionSecretReady } from "../ssh/sshSessionSecret";
@@ -252,6 +252,26 @@ export class SshRemoteResolver {
     }
     this.agentLinkIds.set(authority, id);
     return id;
+  }
+
+  /**
+   * Run a shell command on the host for `authority` over the window's existing
+   * connection. Returns undefined when no live connection is available, so
+   * callers can skip optional work instead of dialing a second SSH session.
+   */
+  async execOnHost(
+    authority: string,
+    command: string,
+    timeoutMs = 15_000,
+  ): Promise<ExecResult | undefined> {
+    const shared =
+      this.connections.get(authority)?.shared ?? this.transports.get(authority);
+    if (!shared || shared.dead || !shared.conn.isConnected) return undefined;
+    try {
+      return await shared.conn.exec(command, timeoutMs, true);
+    } catch {
+      return undefined;
+    }
   }
 
   async resolve(
@@ -857,17 +877,24 @@ export class SshRemoteResolver {
 
     // Start detached. --detach makes the binary re-exec in a new session
     // (no controlling terminal), so it survives the shell exit without
-    // nohup. --root bounds file ops to the user's home. --meta-file writes
-    // a single atomic JSON file with port/pid/token (replaces the prior
-    // tunnel-port + tunnel-pid pair; the resolver reads it in one cat).
-    // The binary self-generates its bearer token from crypto/rand and
-    // writes it into the meta file, so no --token-file is passed here.
+    // nohup. --root is set to `/` and no --write-root is passed, so both
+    // reads and writes are unrestricted (the default write root is the read
+    // root). The three constraints we would want are all defeated by real
+    // usage: a workspace can live anywhere, devcontainer.json can reference
+    // files anywhere, and the CLI writes lockfiles / config updates next to
+    // it -- while $HOME is readable under any bound worth having. What is
+    // left guarding this socket is the bearer token plus SSH.
+    // --meta-file writes a single atomic JSON file with port/pid/token
+    // (replaces the prior tunnel-port + tunnel-pid pair; the resolver reads it
+    // in one cat). The binary self-generates its bearer token from
+    // crypto/rand and writes it into the meta file, so no --token-file is
+    // passed here.
     const cmd =
       `${shellQuote(binRemote)} --detach ` +
       `--port 0 ` +
       `--meta-file ${shellQuote(metaFile)} ` +
       `--idle-timeout-ms ${TRANSPORT_IDLE_TIMEOUT_MS} ` +
-      `--root ${shellQuote(home)} ` +
+      `--root / ` +
       `>> ${shellQuote(logFile)} 2>&1`;
     this.logger.info(`[resolve] starting go transport...`);
     await conn.exec(cmd);

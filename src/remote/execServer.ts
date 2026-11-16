@@ -16,7 +16,6 @@ import type { ISshConnection, ExecResult } from "../ssh/connection";
 import { shellQuote } from "../remote/busybox";
 import { socks5Connect } from "../net/socks5";
 import { wrapSocket } from "../net/managedConnection";
-import { SimpleEvent } from "../common/event";
 import { TransportClient } from "../transport/client";
 
 // --- Types matching vscode.proposed.resolvers.d.ts ---
@@ -69,29 +68,67 @@ const FT_FILE = 1;
 const FT_DIR = 2;
 const FT_SYMLINK = 64;
 
+/**
+ * ReadStream that buffers chunks until the first listener attaches.
+ *
+ * The sources here (transport sockets, child stdio, managed message passing)
+ * can deliver data before the consumer has had a chance to subscribe -- e.g.
+ * `ExecServer.fs.read` opens a GET, and the file body can arrive in the same
+ * segment as the response header, i.e. before `read()` even returns. A plain
+ * event drops those chunks. Buffer instead, and replay on subscribe.
+ */
+export class BufferedReadStream implements ReadStream {
+  readonly onEnd: Promise<void>;
+  private readonly listeners = new Set<(e: Uint8Array) => void>();
+  private pending: Uint8Array[] = [];
+
+  constructor(onEnd: Promise<void>) {
+    this.onEnd = onEnd;
+  }
+
+  /** Called by the source. Copies, because callers may reuse buffers. */
+  protected push(data: Uint8Array): void {
+    const chunk = new Uint8Array(
+      data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    );
+    if (this.listeners.size === 0) {
+      this.pending.push(chunk);
+      return;
+    }
+    for (const listener of this.listeners) listener(chunk);
+  }
+
+  get onDidReceiveMessage() {
+    return (listener: (e: Uint8Array) => void) => {
+      this.listeners.add(listener);
+      if (this.pending.length > 0) {
+        const queued = this.pending;
+        this.pending = [];
+        for (const chunk of queued) listener(chunk);
+      }
+      return {
+        dispose: () => {
+          this.listeners.delete(listener);
+        },
+      };
+    };
+  }
+}
+
 // --- Stream wrappers ---
 
 /** Wraps a ChildProcess stdout/stderr as a ReadStream. */
-class ProcReadStream implements ReadStream {
-  private readonly event = new SimpleEvent<Uint8Array>();
-  readonly onEnd: Promise<void>;
-
+class ProcReadStream extends BufferedReadStream {
   constructor(
     child: ChildProcess,
     stream: NodeJS.ReadableStream | null | undefined,
   ) {
-    this.onEnd = new Promise<void>((resolve) => {
-      child.on("close", () => resolve());
-    });
-    stream?.on("data", (chunk: Buffer) => {
-      this.event.fire(
-        new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
-      );
-    });
-  }
-
-  get onDidReceiveMessage() {
-    return this.event.event;
+    super(
+      new Promise<void>((resolve) => {
+        child.on("close", () => resolve());
+      }),
+    );
+    stream?.on("data", (chunk: Buffer) => this.push(chunk));
   }
 }
 
@@ -112,22 +149,13 @@ class ProcWriteStream implements WriteStream {
 
 /** Wraps a transport stream as a ReadStream. `onEnd` resolves on process
  *  exit, since the transport has no per-stream end signal. */
-class TransportReadStream implements ReadStream {
-  private readonly event = new SimpleEvent<Uint8Array>();
-  readonly onEnd: Promise<void>;
-
+class TransportReadStream extends BufferedReadStream {
   constructor(
     src: { onData(cb: (d: Buffer) => void): void },
     onExit: Promise<unknown>,
   ) {
-    this.onEnd = onExit.then(() => undefined);
-    src.onData((d) =>
-      this.event.fire(new Uint8Array(d.buffer, d.byteOffset, d.byteLength)),
-    );
-  }
-
-  get onDidReceiveMessage() {
-    return this.event.event;
+    super(onExit.then(() => undefined));
+    src.onData((d) => this.push(d));
   }
 }
 
@@ -173,16 +201,15 @@ class BufferingWriteStream implements WriteStream {
 }
 
 /** Adapts a ManagedMessagePassing to ReadStream & WriteStream. */
-class TcpStream implements WriteStream, ReadStream {
-  private readonly event = new SimpleEvent<Uint8Array>();
-  readonly onEnd: Promise<void>;
-
+class TcpStream extends BufferedReadStream implements WriteStream {
   constructor(passing: any) {
-    this.onEnd = new Promise<void>((resolve) => {
-      passing.onDidClose(() => resolve());
-    });
+    super(
+      new Promise<void>((resolve) => {
+        passing.onDidClose(() => resolve());
+      }),
+    );
     passing.onDidReceiveMessage((data: Uint8Array) => {
-      this.event.fire(data);
+      this.push(data);
     });
     // Wire write/end to the underlying passing.
     this._write = (data: Uint8Array) => passing.send(data);
@@ -192,9 +219,6 @@ class TcpStream implements WriteStream, ReadStream {
   private _write: (data: Uint8Array) => void;
   private _end: () => void;
 
-  get onDidReceiveMessage() {
-    return this.event.event;
-  }
   write(data: Uint8Array): void {
     this._write(data);
   }
@@ -351,30 +375,6 @@ export class SshExecServer {
     }
   }
 
-  /** Connect to a unix socket on the remote via the transport. */
-  async connectUnix(
-    path: string,
-  ): Promise<{ stream: any; done: Promise<void> }> {
-    if (!this.transportClient) {
-      throw new Error("Transport not available for connectUnix");
-    }
-    this.logger.info(`[execServer] connectUnix ${path}`);
-    try {
-      const socket = await this.transportClient.connectUnix(path);
-      const passing = wrapSocket(socket);
-      const stream = new TcpStream(passing);
-      const done = new Promise<void>((resolve) => {
-        passing.onDidClose(() => resolve());
-      });
-      this.logger.info(`[execServer] connectUnix ${path} connected`);
-      return { stream, done };
-    } catch (err) {
-      this.logger.info(
-        `[execServer] connectUnix ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
-    }
-  }
 
   /** File system operations backed by SSH exec. */
   readonly fs = {

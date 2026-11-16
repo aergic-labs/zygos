@@ -7,6 +7,16 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+
+// Partial mock: `askpassCache` also imports from this module (secureTempDir),
+// so keep the real exports and override only the socket dir.
+vi.mock("../../src/common/temp", async () => ({
+  ...(await vi.importActual<typeof import("../../src/common/temp")>(
+    "../../src/common/temp",
+  )),
+  socketDir: () => "/tmp/zygos-test",
+}));
+
 import { AskpassServer } from "../../src/ssh/askpassServer";
 
 const mockLogger = {
@@ -188,23 +198,25 @@ describe("AskpassServer.generateSocketPath", () => {
     expect(p.slice("\\\\.\\pipe\\aergic-askpass-".length)).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it("returns a Unix socket path under os.tmpdir() on linux", () => {
+  it("returns a Unix socket path under socketDir() on linux", () => {
     setPlatform("linux");
     const server = new AskpassServer(mockLogger as any, {
       showPrompt: vi.fn(),
     });
     const p = (server as unknown as { generateSocketPath(): string }).generateSocketPath();
-    expect(path.dirname(p)).toBe(os.tmpdir());
-    expect(path.basename(p)).toMatch(/^aergic-askpass-[0-9a-f]{32}\.sock$/);
+    // `path.join` uses the host's separators, so match either.
+    expect(p).toMatch(/zygos-test[\\/]aergic-askpass-[0-9a-f]{32}\.sock$/);
   });
 
-  it("returns a Unix socket path on darwin", () => {
+  it("returns a Unix socket path under socketDir() on darwin", () => {
+    // `socketDir()` is mocked: the real one touches the filesystem and
+    // validates ownership, which only makes sense on the host platform.
     setPlatform("darwin");
     const server = new AskpassServer(mockLogger as any, {
       showPrompt: vi.fn(),
     });
     const p = (server as unknown as { generateSocketPath(): string }).generateSocketPath();
-    expect(path.basename(p)).toMatch(/^aergic-askpass-[0-9a-f]{32}\.sock$/);
+    expect(p).toMatch(/zygos-test[\\/]aergic-askpass-[0-9a-f]{32}\.sock$/);
   });
 });
 

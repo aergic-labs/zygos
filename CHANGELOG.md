@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.3]
+
+### Changed
+
+- Stages the future artizo sideload cleanup. Disabled in code, does not run.
+- Go transport is no longer path-restricted: `--root /`, no write roots. Workspaces and files referenced by devcontainer.json can live anywhere, and `$HOME` was readable under any bound worth keeping.
+
+### Fixed
+
+- Session and askpass sockets use a short POSIX `/tmp/zygos-<hash>` directory (0700, ownership-checked) instead of `TMPDIR`, which can exceed the `sun_path` limit (#13).
+- Transport read and spawn streams buffer until the first listener, so the first chunk is no longer dropped when it arrives with the response header.
+
+### Removed
+
+- `ExecServer.connectUnix` and transport op 13. Unused, and not part of the VS Code ExecServer API.
+
 ## [0.9.2]
 
 ### Added

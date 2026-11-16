@@ -39,6 +39,77 @@ const isWin = process.platform === "win32";
  * unlikely, but handle it gracefully). */
 const MAX_RETRIES = 3;
 
+/**
+ * Directory for unix sockets that must stay under the `sun_path` limit.
+ *
+ * macOS `TMPDIR` is a long per-user path (`/var/folders/xx/<hash>/T/`, ~49
+ * chars), and a socket name on top of it can exceed the 104-byte limit
+ * (zygos issue #13). POSIX uses a short per-user directory under `/tmp`
+ * instead, which also keeps the sockets owner-only. The name is derived from
+ * the uid, so it is guessable: verify ownership and mode before use and
+ * refuse anything that is not a 0700 directory owned by us.
+ *
+ * The OS temp dir is only consulted on Windows, where it holds named pipes;
+ * POSIX never reads `TMPDIR`.
+ */
+export function socketDirFor(
+  platform: NodeJS.Platform,
+  uid: number,
+): string {
+  // Windows uses named pipes, not filesystem sockets.
+  if (platform === "win32") return os.tmpdir();
+  const tag = crypto
+    .createHash("sha256")
+    .update(String(uid))
+    .digest("hex")
+    .slice(0, 8);
+  return `/tmp/zygos-${tag}`;
+}
+
+/**
+ * Create `dir` (0700) if needed and verify it is a real directory owned by
+ * `uid` with mode 0700. Throws otherwise: a pre-created or symlinked path is
+ * an attack, not something to use.
+ */
+export function ensureSocketDir(dir: string, uid: number): void {
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  // lstat: a symlink here would be an attack, not a directory.
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== uid) {
+    throw new Error(
+      `refusing to use ${dir}: not a directory owned by uid ${uid}`,
+    );
+  }
+  // mkdir's mode is masked by the umask, and an older run may have left a
+  // looser mode. Tighten our own directory, then trust it. Mode bits say
+  // nothing about macOS ACLs: we assume stock /private/tmp has none that
+  // grant access; admin-managed ACLs are outside our supported setup.
+  if ((st.mode & 0o7777) !== 0o700) {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch (err) {
+      throw new Error(
+        `refusing to use ${dir}: cannot set mode 0700: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/** {@link socketDirFor} for this process, creating and validating the dir. */
+export function socketDir(): string {
+  if (process.platform === "win32") return socketDirFor(process.platform, 0);
+  // Effective uid: mkdir and the ownership check both run as that user.
+  const uid = process.geteuid?.() ?? process.getuid?.();
+  if (uid === undefined) throw new Error("cannot determine effective uid");
+  const dir = socketDirFor(process.platform, uid);
+  ensureSocketDir(dir, uid);
+  return dir;
+}
+
 /** Resolve the temp base dir, defending against symlink attacks on Unix. */
 function tempBase(): string {
   if (isWin) {

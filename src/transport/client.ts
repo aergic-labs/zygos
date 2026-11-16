@@ -37,7 +37,7 @@ const OP = {
   ENV: 10,
   KILL: 11,
   HEALTH: 12,
-  CONNECT: 13,
+
   WAIT_FILE: 14,
   EXTRACT: 105,
 } as const;
@@ -416,15 +416,10 @@ export class TransportClient {
       sock.destroy();
       throw new TransportError(status, `getFile ${path} failed: ${status}`);
     }
-    const cbs: Array<(d: Buffer) => void> = [];
-    const pending: Buffer[] = [];
-    const emit = (c: Buffer) => {
-      if (cbs.length === 0) pending.push(c);
-      else for (const cb of cbs) cb(c);
-    };
-    if (rest.length) emit(rest);
+    const sink = bufferedSink();
+    if (rest.length) sink.emit(rest);
     const onEnd = new Promise<void>((resolve) => {
-      sock.on("data", emit);
+      sock.on("data", sink.emit);
       sock.on("end", () => {
         sock.destroy();
         resolve();
@@ -435,11 +430,7 @@ export class TransportClient {
       });
     });
     return {
-      onData: (cb) => {
-        cbs.push(cb);
-        for (const p of pending) cb(p);
-        pending.length = 0;
-      },
+      onData: sink.onData,
       onEnd,
     };
   }
@@ -458,8 +449,8 @@ export class TransportClient {
       env: opts?.env,
     });
 
-    const stdoutCbs: Array<(d: Buffer) => void> = [];
-    const stderrCbs: Array<(d: Buffer) => void> = [];
+    const stdoutSink = bufferedSink();
+    const stderrSink = bufferedSink();
     let resolveExit!: (v: { status: number }) => void;
     let rejectExit!: (e: Error) => void;
     const onExit = new Promise<{ status: number }>((res, rej) => {
@@ -474,8 +465,8 @@ export class TransportClient {
           throw new TransportError(status, `spawn failed: status ${status}`);
         }
         await readFrames(sock, rest, {
-          stdout: (d) => stdoutCbs.forEach((cb) => cb(d)),
-          stderr: (d) => stderrCbs.forEach((cb) => cb(d)),
+          stdout: stdoutSink.emit,
+          stderr: stderrSink.emit,
           exit: (code) => resolveExit({ status: code }),
         });
       } catch (err) {
@@ -491,23 +482,39 @@ export class TransportClient {
           sock.write(Buffer.from(data.buffer, data.byteOffset, data.byteLength)),
         end: () => sock.end(),
       },
-      stdout: { onData: (cb) => stdoutCbs.push(cb) },
-      stderr: { onData: (cb) => stderrCbs.push(cb) },
+      stdout: { onData: stdoutSink.onData },
+      stderr: { onData: stderrSink.onData },
       onExit,
     };
   }
 
-  /** fs.connect: duplex relay to a unix socket on the remote. */
-  async connectUnix(path: string): Promise<net.Socket> {
-    const sock = await this.connect();
-    this.writeHeader(sock, OP.CONNECT, { path });
-    const { status } = await readResponse(sock);
-    if (status !== ST.OK) {
-      sock.destroy();
-      throw new TransportError(status, `connect ${path} failed: ${status}`);
-    }
-    return sock;
-  }
+}
+
+/**
+ * Sink that buffers chunks until the first consumer subscribes, then streams.
+ * Callers here (`spawn` stdout/stderr, `openGetFile`) construct their wrapper
+ * one await after the source can start emitting, so anything sent before that
+ * must be replayed rather than dropped.
+ */
+export function bufferedSink(): {
+  emit(d: Buffer): void;
+  onData(cb: (d: Buffer) => void): void;
+} {
+  const cbs: Array<(d: Buffer) => void> = [];
+  const pending: Buffer[] = [];
+  return {
+    emit: (d: Buffer) => {
+      if (cbs.length === 0) pending.push(d);
+      else for (const cb of cbs) cb(d);
+    },
+    onData: (cb: (d: Buffer) => void) => {
+      cbs.push(cb);
+      if (pending.length === 0) return;
+      const queued = pending.slice();
+      pending.length = 0;
+      for (const p of queued) cb(p);
+    },
+  };
 }
 
 /** Read a 5-byte response header, then the inline body. Returns any

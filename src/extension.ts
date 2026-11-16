@@ -23,6 +23,7 @@ import { initCache, disposeCache } from "./ssh/askpassCache";
 import { initSshSessionSecret, disposeSshSessionSecret, sshSessionSecretReady } from "./ssh/sshSessionSecret";
 import { initVscodiumFeed } from "./remote/vscodiumFeed";
 import { configureDownloadCache, maybePruneCache } from "./remote/download";
+import { removeSideloadedArtizo, currentSshAuthority } from "./remote/legacyArtizo";
 
 // Build-time flag determines the published extension name.
 declare const HAS_KIRO_ADAPTER: boolean;
@@ -218,6 +219,25 @@ export async function activate(
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`[activate] failed to register resolver: ${msg}`);
     return;
+  }
+
+  // One-time cleanup of the artizo copy that older versions side-loaded onto
+  // the host. Fire-and-forget: never fail activation, never block the window.
+  // Uses the connection this window already established.
+  if (resolver && vscode.env.remoteName === "ssh-remote") {
+    const authority = currentSshAuthority();
+    if (authority) {
+      void removeSideloadedArtizo({
+        context,
+        logger,
+        platform,
+        execOnHost: (command) => resolver!.execOnHost(authority, command),
+      }).catch((err) =>
+        logger.info(
+          `[legacy] cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    }
   }
 
   // Manual escape hatch for stuck sessions: drop all refcounted

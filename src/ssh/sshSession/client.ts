@@ -16,12 +16,12 @@
  */
 
 import * as http from "node:http";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Logger } from "../../common/logger";
+import { socketDir } from "../../common/temp";
 import { deriveSshSessionToken } from "../sshSessionSecret";
 import { LogTailer } from "./logTailer";
 import type {
@@ -270,7 +270,9 @@ export class SshSessionClient {
     if (process.platform === "win32") {
       return `\\\\.\\pipe\\aergic-ssh-session-${id}`;
     }
-    return path.join(os.tmpdir(), `aergic-ssh-session-${id}.sock`);
+    // `socketDir()` keeps the base short enough for the `sun_path` limit on
+    // macOS, where TMPDIR is a long per-user path (issue #13).
+    return path.join(socketDir(), `aergic-ssh-session-${id}.sock`);
   }
 
   private async waitForReady(): Promise<void> {

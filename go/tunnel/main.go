@@ -55,7 +55,6 @@ const (
 	opEnv      = 10
 	opKill     = 11
 	opHealth   = 12
-	opConnect  = 13
 	opWaitFile = 14
 )
 
@@ -85,30 +84,16 @@ var (
 	port     = flag.Int("port", 0, "listen port (0 = pick free)")
 	metaFile = flag.String("meta-file", "", "write port/pid/token JSON here (atomic)")
 	idleMs   = flag.Int("idle-timeout-ms", 120000, "exit after this many ms idle")
-	root     = flag.String("root", "", "read root (default $HOME)")
 	detach   = flag.Bool("detach", false, "self-daemonize (new session, no controlling terminal)")
 )
 
-type stringList []string
-
-func (s *stringList) String() string { return strings.Join(*s, ",") }
-func (s *stringList) Set(v string) error {
-	*s = append(*s, v)
-	return nil
-}
-
-var writeRoots stringList
-
 var (
-	bearer   []byte
-	rootAbs  string
-	writeAbs []string
-	lastAct  time.Time
-	actMu    sync.Mutex
+	bearer  []byte
+	lastAct time.Time
+	actMu   sync.Mutex
 )
 
 func main() {
-	flag.Var(&writeRoots, "write-root", "write root (repeatable)")
 	flag.Parse()
 
 	// Self-daemonize: re-exec detached and let the parent exit. The child
@@ -130,26 +115,6 @@ func main() {
 		fatal("rand: %v", err)
 	}
 
-	if *root == "" {
-		home, _ := os.UserHomeDir()
-		*root = home
-	}
-	rootAbs, err = filepath.Abs(*root)
-	if err != nil {
-		fatal("resolve root: %v", err)
-	}
-	for _, wr := range writeRoots {
-		a, err := filepath.Abs(wr)
-		if err != nil {
-			fatal("resolve write-root: %v", err)
-		}
-		writeAbs = append(writeAbs, a)
-	}
-	// No explicit write roots: writes are allowed under the read root.
-	if len(writeAbs) == 0 {
-		writeAbs = []string{rootAbs}
-	}
-
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
 		fatal("listen: %v", err)
@@ -162,7 +127,7 @@ func main() {
 	lastAct = time.Now()
 	go idleWatch()
 
-	logf("listening on 127.0.0.1:%d (root=%s)", actual, rootAbs)
+	logf("listening on 127.0.0.1:%d", actual)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -220,8 +185,6 @@ func handleConn(conn net.Conn) {
 		doKill(conn, args)
 	case opHealth:
 		_ = writeResp(conn, stOK, nil)
-	case opConnect:
-		doConnect(conn, args)
 	case opWaitFile:
 		doWaitFile(conn, args)
 
@@ -263,38 +226,6 @@ func writeResp(w io.Writer, status byte, args []byte) error {
 func writeJSON(w io.Writer, status byte, v any) {
 	b, _ := json.Marshal(v)
 	_ = writeResp(w, status, b)
-}
-
-// --- path scoping ---
-
-func resolveRead(p string) (string, error) { return resolveUnder(rootAbs, p) }
-
-func resolveWrite(p string) (string, error) {
-	for _, wr := range writeAbs {
-		if abs, err := resolveUnder(wr, p); err == nil {
-			return abs, nil
-		}
-	}
-	return "", errors.New("path outside write roots")
-}
-
-func resolveUnder(base, p string) (string, error) {
-	if p == "" {
-		return "", errors.New("missing path")
-	}
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(base, abs)
-	}
-	cleaned := filepath.Clean(abs)
-	rel, err := filepath.Rel(base, cleaned)
-	if err != nil {
-		return "", err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("path escapes root")
-	}
-	return cleaned, nil
 }
 
 // --- ops ---
@@ -422,11 +353,7 @@ func doPut(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveWrite(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		_ = writeResp(conn, stError, nil)
 		return
@@ -457,11 +384,7 @@ func doGet(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveRead(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	f, err := os.Open(p)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -491,11 +414,7 @@ func doStat(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveRead(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	fi, err := os.Stat(p)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -524,11 +443,7 @@ func doReaddir(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveRead(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	entries, err := os.ReadDir(p)
 	if err != nil {
 		_ = writeResp(conn, stError, nil)
@@ -551,11 +466,7 @@ func doMkdir(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveWrite(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	if err := os.MkdirAll(p, 0755); err != nil {
 		_ = writeResp(conn, stError, nil)
 		return
@@ -574,16 +485,8 @@ func doRename(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	from, err := resolveWrite(a.From)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
-	to, err := resolveWrite(a.To)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	from := a.From
+	to := a.To
 	if err := os.Rename(from, to); err != nil {
 		_ = writeResp(conn, stError, nil)
 		return
@@ -597,11 +500,7 @@ func doRm(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveWrite(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	if err := os.RemoveAll(p); err != nil {
 		_ = writeResp(conn, stError, nil)
 		return
@@ -651,31 +550,6 @@ func doKill(conn net.Conn, args []byte) {
 	_ = writeResp(conn, stOK, nil)
 }
 
-type connectArgs struct {
-	Path string `json:"path"`
-}
-
-func doConnect(conn net.Conn, args []byte) {
-	var a connectArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		_ = writeResp(conn, stBadReq, nil)
-		return
-	}
-	uc, err := net.Dial("unix", a.Path)
-	if err != nil {
-		_ = writeResp(conn, stError, nil)
-		return
-	}
-	defer uc.Close()
-	if err := writeResp(conn, stOK, nil); err != nil {
-		return
-	}
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(uc, conn); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(conn, uc); done <- struct{}{} }()
-	<-done
-}
-
 // metaFileJSON is the atomic single-file record the resolver reads to
 // discover the transport's port, pid, and bearer token. Replaces the prior
 // tunnel-port + tunnel-pid + tunnel-token triple. Written once at startup;
@@ -723,11 +597,7 @@ func doWaitFile(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	p, err := resolveRead(a.Path)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	p := a.Path
 	timeout := time.Duration(a.TimeoutMs) * time.Millisecond
 	if timeout <= 0 || timeout > maxWaitFileMs*time.Millisecond {
 		timeout = maxWaitFileMs * time.Millisecond

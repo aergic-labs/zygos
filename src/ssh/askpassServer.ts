@@ -19,11 +19,11 @@
  */
 
 import * as net from "node:net";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import type { Logger } from "../common/logger";
+import { socketDir } from "../common/temp";
 import { getCached, setCached, evict, parseKeyPath, validatePassphrase } from "./askpassCache";
 
 export interface AskpassServerDeps {
@@ -255,9 +255,8 @@ export class AskpassServer {
       // Named pipes on Windows live in \\.\pipe\
       return `\\\\.\\pipe\\aergic-askpass-${id}`;
     }
-    // Unix socket - use the OS temp dir, keep the path short
-    // (108-char limit on Linux).
-    const tmp = os.tmpdir();
-    return path.join(tmp, `aergic-askpass-${id}.sock`);
+    // Unix socket. `socketDir()` keeps the base short enough for the
+    // `sun_path` limit on macOS (issue #13).
+    return path.join(socketDir(), `aergic-askpass-${id}.sock`);
   }
 }

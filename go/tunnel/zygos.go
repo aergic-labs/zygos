@@ -263,11 +263,7 @@ func doExtract(conn net.Conn, args []byte) {
 		_ = writeResp(conn, stBadReq, nil)
 		return
 	}
-	dest, err := resolveWrite(a.Dest)
-	if err != nil {
-		_ = writeResp(conn, stDenied, nil)
-		return
-	}
+	dest := a.Dest
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		_ = writeResp(conn, stError, nil)
 		return

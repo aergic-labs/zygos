@@ -114,8 +114,6 @@ describe.skipIf(!hasGo)("TransportClient (Go server)", () => {
         "0",
         "--meta-file",
         metaFile,
-        "--root",
-        tmpDir,
         "--idle-timeout-ms",
         "60000",
       ],
@@ -196,11 +194,6 @@ describe.skipIf(!hasGo)("TransportClient (Go server)", () => {
     expect(fs.readFileSync(p, "utf-8")).toBe("chunk1 chunk2");
   });
 
-  it("rejects paths outside root", async () => {
-    await expect(
-      client.putFile(path.join(tmpDir, "..", "escape.txt"), Buffer.from("x")),
-    ).rejects.toThrow();
-  });
 
   it("extract streams a gzip tarball and extracts with strip-components", async () => {
     const dest = path.join(tmpDir, "extract-test");
