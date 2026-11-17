@@ -877,13 +877,11 @@ export class SshRemoteResolver {
 
     // Start detached. --detach makes the binary re-exec in a new session
     // (no controlling terminal), so it survives the shell exit without
-    // nohup. --root is set to `/` and no --write-root is passed, so both
-    // reads and writes are unrestricted (the default write root is the read
-    // root). The three constraints we would want are all defeated by real
-    // usage: a workspace can live anywhere, devcontainer.json can reference
-    // files anywhere, and the CLI writes lockfiles / config updates next to
-    // it -- while $HOME is readable under any bound worth having. What is
-    // left guarding this socket is the bearer token plus SSH.
+    // nohup. The transport is not path-restricted: reads and writes are
+    // unrestricted because a workspace can live anywhere, devcontainer.json
+    // can reference files anywhere, and the CLI writes lockfiles / config
+    // updates next to it. What guards this socket is the bearer token plus
+    // SSH.
     // --meta-file writes a single atomic JSON file with port/pid/token
     // (replaces the prior tunnel-port + tunnel-pid pair; the resolver reads it
     // in one cat). The binary self-generates its bearer token from
@@ -894,7 +892,6 @@ export class SshRemoteResolver {
       `--port 0 ` +
       `--meta-file ${shellQuote(metaFile)} ` +
       `--idle-timeout-ms ${TRANSPORT_IDLE_TIMEOUT_MS} ` +
-      `--root / ` +
       `>> ${shellQuote(logFile)} 2>&1`;
     this.logger.info(`[resolve] starting go transport...`);
     await conn.exec(cmd);

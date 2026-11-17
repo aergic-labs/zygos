@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as net from "node:net";
 import * as path from "node:path";
+import * as fs from "node:fs";
 
 // Mock the platform module so detectPlatform/getProductInfo don't need
 // build-time globals or a real product.json.
@@ -778,6 +779,23 @@ describe("SshRemoteResolver shared transport (session path)", () => {
     const startCall = fake.calls.find((c) => c.includes("--detach"));
     expect(startCall).toBeDefined();
     expect(startCall).not.toContain("--token-file");
+    // Every flag passed to the binary must exist in its Go source. An unknown
+    // flag makes Go exit 2 before it writes the meta file, and the resolve
+    // then times out waiting for a port.
+    const goSrc = fs.readFileSync(
+      path.join(__dirname, "../../go/tunnel/main.go"),
+      "utf-8",
+    );
+    const defined = new Set(
+      [...goSrc.matchAll(/flag\.[A-Za-z]+\("([^"]+)"/g)].map((m) => m[1]),
+    );
+    const used = [...(startCall ?? "").matchAll(/--([a-z][a-z-]*)/g)].map(
+      (m) => m[1],
+    );
+    expect(used.length).toBeGreaterThan(0);
+    for (const name of used) {
+      expect(defined.has(name), `unknown go flag --${name}`).toBe(true);
+    }
   });
 
   it("routes session-path bookkeeping execs through the go transport", async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.4]
+
+### Fixed
+
+- The Go transport failed to start after 0.9.3: the resolver still passed `--root /`, which the binary no longer defines, so it exited with status 2 before writing its meta file and every resolve timed out. The start command is now checked against the binary's own flag list in a unit test.
+
 ## [0.9.3]
 
 ### Changed
