@@ -128,7 +128,7 @@ export async function buildServerDownloadUrl(
 
 /**
  * Build the log line for a `buildServerDownloadUrl` result. Callers log
- * this to their Output channel — `buildServerDownloadUrl` itself stays
+ * this to their Output channel; `buildServerDownloadUrl` itself stays
  * logger-free so the shared download stack has no logger dependency.
  */
 export function downloadUrlLogMessage(

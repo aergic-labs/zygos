@@ -5,10 +5,12 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import * as os from "node:os";
+
 import * as vscode from "vscode";
 import { detectPlatform, getProductInfo, readProductJson } from "./platform";
 import { Logger } from "./common/logger";
+import { disposeSocketDir } from "./common/temp";
+import { cacheDir } from "./common/appDirs";
 import { checkForConflicts, showConflictInfo, findConflictingExtensions } from "./builtin-disable";
 import { checkArgvAndPromptRestart } from "./platform/argv";
 import { registerHostCommands } from "./host";
@@ -23,7 +25,6 @@ import { initCache, disposeCache } from "./ssh/askpassCache";
 import { initSshSessionSecret, disposeSshSessionSecret, sshSessionSecretReady } from "./ssh/sshSessionSecret";
 import { initVscodiumFeed } from "./remote/vscodiumFeed";
 import { configureDownloadCache, maybePruneCache } from "./remote/download";
-import { removeSideloadedArtizo, currentSshAuthority } from "./remote/legacyArtizo";
 
 // Build-time flag determines the published extension name.
 declare const HAS_KIRO_ADAPTER: boolean;
@@ -194,7 +195,7 @@ export async function activate(
   // Bundled list ships in the VSIX; per-user cache is append-only.
   initVscodiumFeed({
     bundledPath: path.join(context.extensionPath, "tools", "vscodium", "versions.json"),
-    cachePath: path.join(os.homedir(), ".zygos", "vscodium-versions.json"),
+    cachePath: path.join(cacheDir(), "vscodium-versions.json"),
   });
 
   // On-disk cache for REH tarball downloads. Keyed on the original
@@ -219,25 +220,6 @@ export async function activate(
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`[activate] failed to register resolver: ${msg}`);
     return;
-  }
-
-  // One-time cleanup of the artizo copy that older versions side-loaded onto
-  // the host. Fire-and-forget: never fail activation, never block the window.
-  // Uses the connection this window already established.
-  if (resolver && vscode.env.remoteName === "ssh-remote") {
-    const authority = currentSshAuthority();
-    if (authority) {
-      void removeSideloadedArtizo({
-        context,
-        logger,
-        platform,
-        execOnHost: (command) => resolver!.execOnHost(authority, command),
-      }).catch((err) =>
-        logger.info(
-          `[legacy] cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
-    }
   }
 
   // Manual escape hatch for stuck sessions: drop all refcounted
@@ -265,4 +247,5 @@ export async function activate(
 export async function deactivate(): Promise<void> {
   await disposeCache();
   if (sshSessionSecretReady()) disposeSshSessionSecret();
+  disposeSocketDir();
 }

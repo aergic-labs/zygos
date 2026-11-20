@@ -8,7 +8,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-import { ensureArgvProposedApi } from "../../src/platform/argv";
+import { ensureArgvProposedApi, checkArgvAndPromptRestart } from "../../src/platform/argv";
+import {
+  executedCommands,
+  resetExecutedCommands,
+  setNextErrorMessageChoice,
+} from "../__mocks__/vscode";
 import type { PlatformAdapter } from "../../src/platform/types";
 import { noopLogger } from "../__mocks__/mockSshConnection";
 
@@ -157,5 +162,53 @@ describe("ensureArgvProposedApi", () => {
     });
     const result = await ensureArgvProposedApi(adapter, noopLogger as any);
     expect(result).toBe(false);
+  });
+});
+
+describe("checkArgvAndPromptRestart", () => {
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "zygos-argv-prompt-"));
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    resetExecutedCommands();
+    setNextErrorMessageChoice(undefined);
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("does nothing when no patch was needed", async () => {
+    const adapter = makeAdapter({ needsArgvPatch: () => false });
+    expect(await checkArgvAndPromptRestart(adapter, noopLogger as any)).toBe(
+      false,
+    );
+    expect(executedCommands).toEqual([]);
+  });
+
+  it("quits when the user accepts the restart prompt", async () => {
+    setNextErrorMessageChoice("Quit TestIDE");
+    expect(
+      await checkArgvAndPromptRestart(makeAdapter(), noopLogger as any),
+    ).toBe(true);
+    expect(executedCommands).toContainEqual({
+      command: "workbench.action.quit",
+      args: [],
+    });
+  });
+
+  it("does not quit when the prompt is dismissed", async () => {
+    expect(
+      await checkArgvAndPromptRestart(makeAdapter(), noopLogger as any),
+    ).toBe(true);
+    expect(
+      executedCommands.some((c) => c.command === "workbench.action.quit"),
+    ).toBe(false);
   });
 });

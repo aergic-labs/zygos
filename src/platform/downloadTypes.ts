@@ -27,7 +27,7 @@ export interface MinimalLogger {
  * method. PlatformAdapter extends this; other projects' adapters that
  * provide these two members satisfy it structurally.
  */
-export type DownloadUrlType = "auto" | "fallback";
+type DownloadUrlType = "auto" | "fallback";
 
 export interface DownloadUrlResult {
   url: string;

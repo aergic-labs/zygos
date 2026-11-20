@@ -6,7 +6,7 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { stateDir } from "./appDirs";
 
 /**
  * Verbosity gate for the logger, from the `zygos.logLevel` setting. `info`
@@ -34,12 +34,12 @@ function parseLogLevel(value: string | undefined): LogLevel {
  * Shared file path for cross-window logging. Both the apex window and
  * remote windows append to the same file so the full sequence of
  * askpass prompts, cache hits/misses, and resolve calls can be traced
- * in one place. Path: ~/.zygos/zygos.log
+ * in one place. Path: `<state dir>/zygos.log`.
+ *
+ * Nothing is created here; the directory is made on the first write.
  */
 function sharedLogPath(): string {
-  const dir = path.join(os.homedir(), ".zygos");
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best effort */ }
-  return path.join(dir, "zygos.log");
+  return path.join(stateDir(), "zygos.log");
 }
 
 /**
@@ -48,7 +48,7 @@ function sharedLogPath(): string {
  * The level is read from `zygos.logLevel` at construction; changing the
  * setting takes effect on the next window reload.
  *
- * Also appends every line to ~/.zygos/zygos.log so logs from multiple
+ * Also appends every line to `<state dir>/zygos.log` so logs from multiple
  * windows (apex + remote) appear in one tailable file.
  */
 export class Logger {
@@ -56,6 +56,7 @@ export class Logger {
   private readonly level: LogLevel;
   private readonly logPath: string;
   private readonly fileLogging: boolean;
+  private logDirReady = false;
 
   constructor(name: string) {
     this.channel = vscode.window.createOutputChannel(name);
@@ -70,10 +71,22 @@ export class Logger {
       .get<boolean>("fileLog", false);
   }
 
+  /** Create the log directory on first write, never at construction. */
+  private ensureLogDir(): void {
+    if (this.logDirReady) return;
+    this.logDirReady = true;
+    try {
+      fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+    } catch {
+      // Best effort; the append below will fail the same way.
+    }
+  }
+
   private append(level: string, msg: string): void {
     const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
     this.channel.appendLine(line);
     if (this.fileLogging) {
+      this.ensureLogDir();
       try { fs.appendFileSync(this.logPath, line + "\n"); } catch { /* best effort */ }
     }
   }
@@ -102,6 +115,7 @@ export class Logger {
   raw(line: string): void {
     this.channel.appendLine(line);
     if (this.fileLogging) {
+      this.ensureLogDir();
       try { fs.appendFileSync(this.logPath, line + "\n"); } catch { /* best effort */ }
     }
   }
@@ -111,6 +125,7 @@ export class Logger {
     for (const line of lines) {
       this.channel.appendLine(line);
       if (this.fileLogging) {
+        this.ensureLogDir();
         try { fs.appendFileSync(this.logPath, line + "\n"); } catch { /* best effort */ }
       }
     }

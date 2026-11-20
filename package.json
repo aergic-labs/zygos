@@ -2,7 +2,7 @@
   "name": "zygos",
   "displayName": "Zygos Remote SSH",
   "description": "Connect to any remote machine via SSH. Open folders on remote hosts, run a full IDE-backed server, and chain into devcontainers - all over a stock ssh binary.",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "publisher": "aergic",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -269,7 +269,7 @@
         "zygos.fileLog": {
           "type": "boolean",
           "default": false,
-          "description": "Append all logs to ~/.zygos/zygos.log so logs from multiple windows (apex + remote) appear in one tailable file. Off by default.",
+          "description": "Append all logs to one file in the platform state directory (for example ~/.local/state/zygos/zygos.log on Linux) so logs from multiple windows appear in one tailable file. Off by default.",
           "order": 13
         },
         "zygos.askpass": {

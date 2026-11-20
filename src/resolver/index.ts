@@ -695,7 +695,7 @@ export class SshRemoteResolver {
     // Wait for the ready file via the Go transport's `waitForFile` op.
     // The transport is up by this point (onProbed threw if it failed to
     // start), so a single waitForFile call replaces a poll loop of `cat`
-    // round-trips. A failure here is a hard failure — do NOT fall back to a
+    // round-trips. A failure here is a hard failure; do NOT fall back to a
     // poll loop; that would silently route around the transport (the same
     // anti-pattern that masked the handlePutFile mkdir bug behind a
     // confusing "Tarball extraction failed" 30s later). Surface the real

@@ -155,8 +155,7 @@ try {
   delete merged.devDependencies;
 
   // Strip items declared in __strip from the merged package.json.
-  // This lets vendor builds remove base contributes that don't apply
-  // (e.g. Kiro has no configurable server download).
+  // This lets vendor builds remove base contributes that do not apply.
   if (stripSpec) {
     stripFromMerged(merged, stripSpec);
   }

@@ -44,69 +44,51 @@ const MAX_RETRIES = 3;
  *
  * macOS `TMPDIR` is a long per-user path (`/var/folders/xx/<hash>/T/`, ~49
  * chars), and a socket name on top of it can exceed the 104-byte limit
- * (zygos issue #13). POSIX uses a short per-user directory under `/tmp`
- * instead, which also keeps the sockets owner-only. The name is derived from
- * the uid, so it is guessable: verify ownership and mode before use and
- * refuse anything that is not a 0700 directory owned by us.
+ * (zygos issue #13). POSIX uses a short directory under `/tmp` instead.
  *
- * The OS temp dir is only consulted on Windows, where it holds named pipes;
- * POSIX never reads `TMPDIR`.
+ * The name is random per process (`mkdtemp`), so another local user cannot
+ * pre-create it and block connections. `mkdtemp` creates it 0700, and the
+ * prefix is literal `/tmp`, so `TMPDIR` is never consulted. The OS temp dir
+ * is only used on Windows, where it holds named pipes.
  */
-export function socketDirFor(
-  platform: NodeJS.Platform,
-  uid: number,
-): string {
+export function socketDirPrefix(platform: NodeJS.Platform): string {
   // Windows uses named pipes, not filesystem sockets.
   if (platform === "win32") return os.tmpdir();
-  const tag = crypto
-    .createHash("sha256")
-    .update(String(uid))
-    .digest("hex")
-    .slice(0, 8);
-  return `/tmp/zygos-${tag}`;
+  return "/tmp/zygos-";
 }
+
+let cachedSocketDir: string | undefined;
 
 /**
- * Create `dir` (0700) if needed and verify it is a real directory owned by
- * `uid` with mode 0700. Throws otherwise: a pre-created or symlinked path is
- * an attack, not something to use.
+ * Remove the socket directory created by {@link socketDir}. Best effort, and
+ * only for a directory we created: literal `/tmp/zygos-` prefix, a real
+ * directory, not a symlink.
  */
-export function ensureSocketDir(dir: string, uid: number): void {
+export function disposeSocketDir(): void {
+  const dir = cachedSocketDir;
+  cachedSocketDir = undefined;
+  if (!dir || !dir.startsWith("/tmp/zygos-")) return;
   try {
-    fs.mkdirSync(dir, { mode: 0o700 });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-  }
-  // lstat: a symlink here would be an attack, not a directory.
-  const st = fs.lstatSync(dir);
-  if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== uid) {
-    throw new Error(
-      `refusing to use ${dir}: not a directory owned by uid ${uid}`,
-    );
-  }
-  // mkdir's mode is masked by the umask, and an older run may have left a
-  // looser mode. Tighten our own directory, then trust it. Mode bits say
-  // nothing about macOS ACLs: we assume stock /private/tmp has none that
-  // grant access; admin-managed ACLs are outside our supported setup.
-  if ((st.mode & 0o7777) !== 0o700) {
-    try {
-      fs.chmodSync(dir, 0o700);
-    } catch (err) {
-      throw new Error(
-        `refusing to use ${dir}: cannot set mode 0700: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink()) return;
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best effort: the OS tmp cleaner handles anything left behind.
   }
 }
 
-/** {@link socketDirFor} for this process, creating and validating the dir. */
-export function socketDir(): string {
-  if (process.platform === "win32") return socketDirFor(process.platform, 0);
-  // Effective uid: mkdir and the ownership check both run as that user.
-  const uid = process.geteuid?.() ?? process.getuid?.();
-  if (uid === undefined) throw new Error("cannot determine effective uid");
-  const dir = socketDirFor(process.platform, uid);
-  ensureSocketDir(dir, uid);
+/** {@link socketDirPrefix} for this process, created once and reused. */
+export function socketDir(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return socketDirPrefix(platform);
+  if (cachedSocketDir) return cachedSocketDir;
+  const dir = fs.mkdtempSync(socketDirPrefix(platform));
+  try {
+    // mkdtemp already uses 0700; the umask can only tighten it.
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // Best effort; the directory is ours and already 0700.
+  }
+  cachedSocketDir = dir;
   return dir;
 }
 

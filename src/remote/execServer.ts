@@ -20,7 +20,7 @@ import { TransportClient } from "../transport/client";
 
 // --- Types matching vscode.proposed.resolvers.d.ts ---
 
-export interface ProcessExit {
+interface ProcessExit {
   readonly status: number;
   readonly message?: string;
 }

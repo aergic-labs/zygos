@@ -124,8 +124,8 @@ See `tools/busybox/PROVENANCE.md` for full details.
 ## Persistent SSH session
 
 Zygos keeps one SSH session per window open for the lifetime of the
-remote connection and reuses it across every remote operation — resolving the
-authority, starting the server, running remote commands — instead of opening a
+remote connection and reuses it across every remote operation (resolving the
+authority, starting the server, running remote commands) instead of opening a
 fresh SSH connection per command. One ssh process per window means fewer auth
 prompts and a single SOCKS5 forward for the whole window.
 
@@ -150,7 +150,7 @@ cached sessions and transports so the next connect starts fresh.
 | `zygos.sshPath` | `""` | Absolute path to a custom `ssh` executable. |
 | `zygos.configFile` | `""` | Absolute path to a custom SSH config file. |
 | `zygos.logLevel` | `info` | Output channel log level: `info`, `debug`, `trace`. |
-| `zygos.fileLog` | `false` | Append logs to `~/.zygos/zygos.log` so logs from multiple windows appear in one tailable file. |
+| `zygos.fileLog` | `false` | Append logs to one file in the platform state directory (for example `~/.local/state/zygos/zygos.log` on Linux) so logs from multiple windows appear in one tailable file. |
 | `zygos.askpass` | `true` | Show password/passphrase prompts as VS Code input boxes. |
 | `zygos.askpassCacheTtl` | `8` | Hours that cached passphrases survive. 0 = never expire. |
 | `zygos.askpassKeyRotationDays` | `7` | Days before the askpass cache master key rotates. 0 = never. |

@@ -221,7 +221,7 @@ describe.skipIf(!hasGo)("TransportClient (Go server)", () => {
       { name: "top/../../escape.txt", type: "file", content: "pwn" },
     ]);
     await client.extract(dest, 1, tarGz);
-    // The file is inside dest, sanitized — never escapes to tmpDir.
+    // The file is inside dest, sanitized, never escapes to tmpDir.
     expect(fs.existsSync(path.join(dest, "escape.txt"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "escape.txt"))).toBe(false);
   });

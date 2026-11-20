@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.5]
+
+### Changed
+
+- `zygos.log` moves to `$XDG_STATE_HOME/zygos` (default `~/.local/state/zygos`) and the vscodium cache to `$XDG_CACHE_HOME/zygos` (default `~/.cache/zygos`), with the platform equivalents on Windows and macOS. `~/.zygos` is no longer created unless file logging is on.
+- Session and askpass sockets use a per-process random `/tmp/zygos-*` directory instead of a uid-derived one, so another local user cannot pre-create it and block connections.
+- Docs and comments: removed the remaining em-dashes.
+
+### Removed
+
+- The staged artizo sideload cleanup (`legacyArtizo`). Artizo retires its own sideload from the UI side now.
+
 ## [0.9.4]
 
 ### Fixed

@@ -16,10 +16,10 @@ and ask before reverting.
 
 ## Critical: NO EMDASHES ANYWHERE
 
-Do not use emdashes (—) or endashes (–) anywhere in code, comments, changelog
+Do not use emdashes or endashes anywhere in code, comments, changelog
 entries, commit messages, docs, or any other text you write in this repo. Use
 a colon, semicolon, comma, parenthetical, or plain rewording instead. This is
-a hard rule; do not insert emdashes for emphasis or rhythm.
+a hard rule; do not insert them for emphasis or rhythm.
 
 ## Critical: Comments and docs are ultra-terse, not LLM-like
 

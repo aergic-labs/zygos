@@ -86,4 +86,16 @@ describe("Logger", () => {
     logger.dispose();
     expect(getOutputChannels()[0].disposed).toBe(true);
   });
+
+  it("raw writes the line without a prefix", () => {
+    logger.raw("plain line");
+    expect(getOutputChannels()[0].lines).toEqual(["plain line"]);
+  });
+
+  it("showLines writes each line and shows the channel", () => {
+    logger.showLines(["one", "two"]);
+    const channel = getOutputChannels()[0];
+    expect(channel.lines).toEqual(["one", "two"]);
+    expect(channel.shown).toBe(true);
+  });
 });

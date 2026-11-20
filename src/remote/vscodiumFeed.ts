@@ -279,6 +279,6 @@ export function compare(a: number[], b: number[]): number {
 }
 
 /** Sort comparator for descending order. Exported for the build-time generator. */
-export function compareVersionsDesc(a: string, b: string): number {
+function compareVersionsDesc(a: string, b: string): number {
   return compare(parseVersion(b), parseVersion(a));
 }

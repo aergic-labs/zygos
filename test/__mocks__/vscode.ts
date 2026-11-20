@@ -64,6 +64,46 @@ export function resetStatusBarItems(): void {
   createdStatusBarItems.length = 0;
 }
 
+// --- Commands ---
+
+export const executedCommands: Array<{ command: string; args: unknown[] }> = [];
+
+export function resetExecutedCommands(): void {
+  executedCommands.length = 0;
+}
+
+export namespace commands {
+  export function executeCommand(
+    command: string,
+    ...args: unknown[]
+  ): Promise<unknown> {
+    executedCommands.push({ command, args });
+    return Promise.resolve(undefined);
+  }
+}
+
+// --- Installed extensions ---
+
+export interface MockExtension {
+  id: string;
+  extensionPath: string;
+  packageJSON?: Record<string, unknown>;
+}
+
+export const installedExtensions: MockExtension[] = [];
+
+export function resetInstalledExtensions(): void {
+  installedExtensions.length = 0;
+}
+
+export namespace extensions {
+  export function getExtension(id: string): MockExtension | undefined {
+    return installedExtensions.find(
+      (e) => e.id.toLowerCase() === id.toLowerCase(),
+    );
+  }
+}
+
 // --- Output channels ---
 
 export const createdOutputChannels: Array<{
@@ -79,6 +119,14 @@ export function resetOutputChannels(): void {
 
 export function getOutputChannels(): typeof createdOutputChannels {
   return createdOutputChannels;
+}
+
+// --- Modal choice returned by showErrorMessage ---
+
+export let nextErrorMessageChoice: string | undefined = undefined;
+
+export function setNextErrorMessageChoice(v: string | undefined): void {
+  nextErrorMessageChoice = v;
 }
 
 export namespace window {
@@ -155,7 +203,7 @@ export namespace window {
     _message: string,
     ..._buttons: string[]
   ): Promise<string | undefined> {
-    return undefined;
+    return nextErrorMessageChoice;
   }
 
   export async function showWarningMessage(

@@ -917,7 +917,7 @@ describe("SshRemoteResolver shared transport (session path)", () => {
     // "falling back to base64" at info level and proceed with
     // transportClient=undefined. The resolver then ran install through the
     // busybox path, which on a fresh remote hit the handlePutFile mkdir bug
-    // and produced a confusing "Tarball extraction failed" 27s later — the
+    // and produced a confusing "Tarball extraction failed" 27s later; the
     // user saw a symptom, not the cause. onProbed must throw so the real
     // failure surfaces immediately.
     //
@@ -940,7 +940,7 @@ describe("SshRemoteResolver shared transport (session path)", () => {
     // Regression: when the transport was up but waitForFile rejected (e.g.
     // the transport died mid-wait), the resolver used to log "falling back
     // to poll" at info level and run a 1s poll loop of `cat server-ready`
-    // through the control shell — silently routing around the transport.
+    // through the control shell, silently routing around the transport.
     // The poll would either find the same dead port (handing VS Code a port
     // nothing is listening on, causing "Connection refused" forever) or
     // time out after 60s. The resolver must surface the transport failure
@@ -964,7 +964,7 @@ describe("SshRemoteResolver shared transport (session path)", () => {
   it("rejects resolve when waitForFile returns a malformed port (regression: silent fallthrough)", async () => {
     // Regression: when waitForFile resolved with empty/garbage content,
     // parseInt returned NaN, `port > 0` was false, and the resolver silently
-    // fell through to the poll loop — masking a wrapper bug that wrote
+    // fell through to the poll loop, masking a wrapper bug that wrote
     // garbage to the ready file. The resolver must throw on malformed
     // content so the wrapper bug surfaces instead of being hidden behind
     // a 60s poll timeout.
@@ -984,7 +984,7 @@ describe("SshRemoteResolver shared transport (session path)", () => {
   it("rejects resolve when tunnel-meta.json is malformed (regression: silent re-ship)", async () => {
     // Regression: when tunnel-meta.json existed but contained garbage (e.g.
     // a partial write, disk corruption, manual edit), probeExistingTransport
-    // used to return null and silently re-ship the binary — overwriting the
+    // used to return null and silently re-ship the binary, overwriting the
     // corruption instead of surfacing it. The probe must throw on a
     // malformed meta file so the user sees the corruption rather than
     // having it silently repaired. The Go binary writes the file atomically
