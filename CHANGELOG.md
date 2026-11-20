@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.6]
+
+### Changed
+
+- `appDirs` takes the app name, so artizo can share the module. No behavior change.
+
 ## [0.9.5]
 
 ### Changed

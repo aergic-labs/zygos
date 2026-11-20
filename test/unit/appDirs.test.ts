@@ -12,38 +12,38 @@ const HOME = path.join(path.sep, "home", "u");
 describe("stateDir", () => {
   it("honors XDG_STATE_HOME on linux", () => {
     const xdg = path.join(path.sep, "x", "state");
-    expect(stateDir("linux", { XDG_STATE_HOME: xdg }, HOME)).toBe(
+    expect(stateDir("zygos", "linux", { XDG_STATE_HOME: xdg }, HOME)).toBe(
       path.join(xdg, "zygos"),
     );
   });
 
   it("defaults to ~/.local/state on linux", () => {
-    expect(stateDir("linux", {}, HOME)).toBe(
+    expect(stateDir("zygos", "linux", {}, HOME)).toBe(
       path.join(HOME, ".local", "state", "zygos"),
     );
   });
 
   it("ignores a relative XDG_STATE_HOME", () => {
-    expect(stateDir("linux", { XDG_STATE_HOME: "relative" }, HOME)).toBe(
+    expect(stateDir("zygos", "linux", { XDG_STATE_HOME: "relative" }, HOME)).toBe(
       path.join(HOME, ".local", "state", "zygos"),
     );
   });
 
   it("uses LOCALAPPDATA on win32", () => {
     const local = path.join(path.sep, "Users", "u", "AppData", "Local");
-    expect(stateDir("win32", { LOCALAPPDATA: local }, HOME)).toBe(
+    expect(stateDir("zygos", "win32", { LOCALAPPDATA: local }, HOME)).toBe(
       path.join(local, "zygos"),
     );
   });
 
   it("falls back to AppData/Local on win32", () => {
-    expect(stateDir("win32", {}, HOME)).toBe(
+    expect(stateDir("zygos", "win32", {}, HOME)).toBe(
       path.join(HOME, "AppData", "Local", "zygos"),
     );
   });
 
   it("uses Application Support on darwin", () => {
-    expect(stateDir("darwin", {}, HOME)).toBe(
+    expect(stateDir("zygos", "darwin", {}, HOME)).toBe(
       path.join(HOME, "Library", "Application Support", "zygos"),
     );
   });
@@ -52,26 +52,26 @@ describe("stateDir", () => {
 describe("cacheDir", () => {
   it("honors XDG_CACHE_HOME on linux", () => {
     const xdg = path.join(path.sep, "x", "cache");
-    expect(cacheDir("linux", { XDG_CACHE_HOME: xdg }, HOME)).toBe(
+    expect(cacheDir("zygos", "linux", { XDG_CACHE_HOME: xdg }, HOME)).toBe(
       path.join(xdg, "zygos"),
     );
   });
 
   it("defaults to ~/.cache on linux", () => {
-    expect(cacheDir("linux", {}, HOME)).toBe(
+    expect(cacheDir("zygos", "linux", {}, HOME)).toBe(
       path.join(HOME, ".cache", "zygos"),
     );
   });
 
   it("uses LOCALAPPDATA/Cache on win32", () => {
     const local = path.join(path.sep, "Users", "u", "AppData", "Local");
-    expect(cacheDir("win32", { LOCALAPPDATA: local }, HOME)).toBe(
+    expect(cacheDir("zygos", "win32", { LOCALAPPDATA: local }, HOME)).toBe(
       path.join(local, "zygos", "Cache"),
     );
   });
 
   it("uses Library/Caches on darwin", () => {
-    expect(cacheDir("darwin", {}, HOME)).toBe(
+    expect(cacheDir("zygos", "darwin", {}, HOME)).toBe(
       path.join(HOME, "Library", "Caches", "zygos"),
     );
   });

@@ -39,7 +39,7 @@ function parseLogLevel(value: string | undefined): LogLevel {
  * Nothing is created here; the directory is made on the first write.
  */
 function sharedLogPath(): string {
-  return path.join(stateDir(), "zygos.log");
+  return path.join(stateDir("zygos"), "zygos.log");
 }
 
 /**

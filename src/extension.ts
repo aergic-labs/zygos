@@ -195,7 +195,7 @@ export async function activate(
   // Bundled list ships in the VSIX; per-user cache is append-only.
   initVscodiumFeed({
     bundledPath: path.join(context.extensionPath, "tools", "vscodium", "versions.json"),
-    cachePath: path.join(cacheDir(), "vscodium-versions.json"),
+    cachePath: path.join(cacheDir("zygos"), "vscodium-versions.json"),
   });
 
   // On-disk cache for REH tarball downloads. Keyed on the original

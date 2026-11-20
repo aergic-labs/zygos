@@ -24,6 +24,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export function stateDir(
+  app: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   home: string = os.homedir(),
@@ -31,17 +32,18 @@ export function stateDir(
   if (platform === "win32") {
     const local = env.LOCALAPPDATA;
     const base = local && path.isAbsolute(local) ? local : path.join(home, "AppData", "Local");
-    return path.join(base, "zygos");
+    return path.join(base, app);
   }
   if (platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "zygos");
+    return path.join(home, "Library", "Application Support", app);
   }
   const xdg = env.XDG_STATE_HOME;
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(home, ".local", "state");
-  return path.join(base, "zygos");
+  return path.join(base, app);
 }
 
 export function cacheDir(
+  app: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   home: string = os.homedir(),
@@ -49,12 +51,12 @@ export function cacheDir(
   if (platform === "win32") {
     const local = env.LOCALAPPDATA;
     const base = local && path.isAbsolute(local) ? local : path.join(home, "AppData", "Local");
-    return path.join(base, "zygos", "Cache");
+    return path.join(base, app, "Cache");
   }
   if (platform === "darwin") {
-    return path.join(home, "Library", "Caches", "zygos");
+    return path.join(home, "Library", "Caches", app);
   }
   const xdg = env.XDG_CACHE_HOME;
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(home, ".cache");
-  return path.join(base, "zygos");
+  return path.join(base, app);
 }
